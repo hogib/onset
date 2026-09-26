@@ -249,6 +249,16 @@ runs once a minute.
 
 Conv1d, GELU, LayerNorm and multi-head attention already exist.
 
+**Location from the geometry head.** A model trained with `--geometry 1`
+also says, per token after P, how far away the event is (Gaussian in log km)
+and in which direction (von Mises back-azimuth). ayzek uses that in place of
+its S-P picker: every station sends its latest estimate once a second for
+20 s after its trigger, and the network stage maximises the product of the
+stations' likelihoods together with their P times (`locate.py`, transcribed
+as ayzek's `pipeline/locate.cpp`). That gives a location from the trigger on
+instead of after a 60 s picker window, and from a single station when it has
+a back-azimuth. See ayzek's `docs/impl/15-geometry-location.md`.
+
 ## 7. Known limitations and open questions
 
 - **TauP runs early here.** On the KO pulls the accepted AIC picks land a
@@ -271,4 +281,9 @@ Conv1d, GELU, LayerNorm and multi-head attention already exist.
   any window a visible catalogued arrival touches. Uncatalogued micro-events
   remain in them as label noise.
 - **The picker and the magnitude regressor** are the next stages. The dt head
-  exists to hand the picker its window.
+  exists to hand the picker its window. With the geometry head, location no
+  longer needs the picker (§6).
+- **The geometry head's uncertainties are the location's weights.** They are
+  only as good as their calibration (`cal_1sd` in the evaluate geometry
+  table, 0.68 when honest); an overconfident station pulls the location
+  (`tests/test_locate.py`).

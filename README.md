@@ -62,4 +62,5 @@ See `docs/DATA.md`.
 | `build_fdsn.py`, `build_stead.py` | the two sources -> stores; `validate-aic` |
 | `data.py` | crops, lead-in, gaps, context -> examples |
 | `metrics.py` | latency, early triggers, false triggers per hour, threshold sweep |
+| `locate.py` | a network location from the geometry head's per-station distance and back-azimuth; the reference for ayzek's locator |
 | `train.py`, `evaluate.py`, `replay.py`, `cli.py` | the commands |

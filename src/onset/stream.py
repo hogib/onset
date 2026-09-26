@@ -53,17 +53,21 @@ class StreamingDetector:
         self.ctx = self.model.encode_context(c, has, 1)
 
     @torch.no_grad()
-    def push(self, x: torch.Tensor) -> list[tuple[float, float]]:
+    def push(self, x: torch.Tensor, geometry: bool = False) -> list[tuple]:
         """Adds (N, 4) samples; returns `(probability, dt)` for each token they
-        complete, oldest first."""
+        complete, oldest first. With `geometry` (a model trained with the
+        geometry head), `(probability, dt, estimate)`, the estimate as
+        `locate.estimates_from_head` gives it."""
+        if geometry and not self.model.cfg.geometry:
+            raise ValueError("this model has no geometry head")
         self.pending = torch.cat([self.pending, x.to(self.device)])
         out = []
         while len(self.pending) >= self.stride:
             chunk, self.pending = self.pending[: self.stride], self.pending[self.stride:]
-            out.append(self._token(chunk))
+            out.append(self._token(chunk, geometry))
         return out
 
-    def _token(self, chunk):
+    def _token(self, chunk, geometry=False):
         # Until `history` samples exist the stem sees the stream from its first
         # sample, exactly as a full forward pass pads it; after that, only the
         # newest `history` samples can reach the newest token.
@@ -84,7 +88,11 @@ class StreamingDetector:
             e = e + block.ca(block.ln_ca(e), self.ctx)
             e = e + block.ff(block.ln_ff(e))
         logit, dt = self.model.readout(e)
-        return float(torch.sigmoid(logit)), float(dt)
+        if not geometry:
+            return float(torch.sigmoid(logit)), float(dt)
+        from onset.locate import estimates_from_head
+        return (float(torch.sigmoid(logit)), float(dt),
+                estimates_from_head(self.model.geometry(e), token=0))
 
 
 def block_overlap_tokens(model: OnsetDetector) -> int:
