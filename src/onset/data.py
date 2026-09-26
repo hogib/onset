@@ -10,19 +10,30 @@ amounts of history before the onset. Because the model is causal, where P
 falls *within* the crop does not matter: the token half a second after P sees
 the same past whether the crop ends one second later or thirty.
 
-**Lead-in.** An FDSN event trace starts at origin time, so its P has at most
-~15 s of history, while noise crops have up to `seq_seconds`. Left alone, that
-is a shortcut: through its ~32 s stacked lookback the model could learn that
-onsets never come late in a sequence, and fail exactly on a continuous stream.
-With probability `lead_in_p`, a trace (event or noise alike) is prefixed with
-up to `lead_in_max_s` of the same station's context noise and a 0.2–1 s gap
-between them. The crop then puts P anywhere from 1 s to the crop's end, and
-because noise gets the same treatment, "a gap came before" says nothing about
-the label. The join is a gap and not a splice because a gap is real: the
-filter restarts there and the mask channel says so, as it would on a live
-station.
+**Lead-in: why every trace is spliced onto older noise.** An FDSN event
+trace starts at origin time, so its P always comes 2–11 s after the data
+begins. A model trained on that learns "onsets come shortly after the data
+starts". On a continuous stream the data never starts, and the model then
+waits for the S wave: measured on the same 8 events, a model trained that way
+fired 3–8 s after origin on the event trace alone and 7–24 s after origin on
+the same trace behind 24 h of continuous data.
 
-Evaluation takes whole traces, uncropped.
+A first attempt joined older noise in front *across a gap*. That moved the
+cue without removing it: the onset now came 2–11 s after the gap instead.
+The model was just as blind on continuous data, and the validation set,
+whose traces also started at origin, could not show it.
+
+So the join is now seamless (`_splice`). The event trace loses its first 1.5 s
+(the filter's start-up); the lead-in, from the same station's noise, is scaled
+per component to the RMS of the event's own pre-P noise; and the two are
+joined with a 0.5 s equal-power crossfade. There is no gap, no level step, and
+no change in the noise's character to anchor on. Noise traces get the same
+splice at the same rate, so even a seam the model could find says nothing
+about the label.
+
+**Evaluation** takes whole traces with a fixed `eval_lead_in_s` spliced in
+front, longer than the model's lookback, so validation, too, measures the
+detector with no view of where the data begins.
 """
 from __future__ import annotations
 
@@ -47,6 +58,10 @@ class OnsetDataset(Dataset):
         idx = self.store.index
         self.rows = idx[(idx.split == split) & idx.kind.isin(kinds)].reset_index(drop=True)
         self.contexts = set(idx.loc[idx.kind == "context", "key"])
+        # Lead-in sources: every noise-like trace of each station. Stations are
+        # split-disjoint, so these never cross a split.
+        pool = idx[idx.kind.isin(("noise", "context"))]
+        self.pool = {k: g["key"].tolist() for k, g in pool.groupby(["network", "station"])}
         self.data, self.model, self.train = data, model, train
         self.fs = model.sample_rate
         self.stride = model.stride
@@ -85,16 +100,59 @@ class OnsetDataset(Dataset):
         wave, missing = wave[a:a + L], missing[a:a + L]
         return (wave, missing) if missing.mean() < 0.5 else None
 
-    def _lead_in(self, wave, missing, ctx):
-        """Prefix `wave` with context noise and a gap; returns the new arrays and
-        how many samples were added in front."""
-        lead_w, lead_m = ctx
-        n = int(self.rng.uniform(1.0, self.data.lead_in_max_s) * self.fs)
-        n = min(n, len(lead_w))
-        g = int(self.rng.uniform(0.2, 1.0) * self.fs)
-        w = np.concatenate([lead_w[-n:], np.zeros((g, 3), np.float32), wave])
-        m = np.concatenate([lead_m[-n:], np.ones(g, bool), missing])
-        return w, m, n + g
+    def _lead_source(self, r, n: int, rng):
+        """`n` samples of the station's own noise, nearly gap-free, or None.
+        The event's context when it has one, else any noise-like trace of the
+        station."""
+        keys = [r.context_key] if isinstance(r.context_key, str) else []
+        keys += [k for k in self.pool.get((r.network, r.station), []) if k != r.key]
+        if not keys:
+            return None
+        key = keys[0] if not self.train else keys[int(rng.integers(0, len(keys)))]
+        w, m = self.store.read(key)
+        if len(w) < n:
+            return None
+        a = int(rng.integers(0, len(w) - n + 1)) if self.train else len(w) - n
+        w, m = w[a:a + n], m[a:a + n]
+        return (w, m) if m.mean() < 0.05 else None
+
+    def _splice(self, r, wave, missing, p, rng, seconds: float):
+        """Joins `seconds` of the station's older noise seamlessly in front.
+
+        Returns (wave, missing, p) with P moved, or None when the trace cannot
+        take a splice: no noise for the station, or P too close to the start
+        to trim the filter start-up and still crossfade before it.
+        """
+        fs = self.fs
+        trim = int(self.data.splice_trim_s * fs)
+        xf = int(self.data.splice_xfade_s * fs)
+        if p is not None:
+            ref_end = int(p - 0.5 * fs)           # pre-P noise, clear of the onset
+            if ref_end - trim < xf + int(0.5 * fs):
+                return None
+        else:
+            ref_end = trim + int(5 * fs)
+        n = int(seconds * fs) + xf
+        src = self._lead_source(r, n, rng)
+        if src is None:
+            return None
+        lead, lead_m = src
+        body, body_m = wave[trim:], missing[trim:]
+        ref = channel_scale(body[: ref_end - trim], body_m[: ref_end - trim])
+        lead = lead * (ref / channel_scale(lead, lead_m))
+        th = np.linspace(0.0, np.pi / 2, xf, dtype=np.float32)[:, None]
+        seam = lead[-xf:] * np.cos(th) + body[:xf] * np.sin(th)
+        w = np.concatenate([lead[:-xf], seam, body[xf:]]).astype(np.float32)
+        m = np.concatenate([lead_m[:-xf], lead_m[-xf:] | body_m[:xf], body_m[xf:]])
+        shift = len(lead) - xf - trim
+        return w, m, None if p is None else p + shift
+
+    def _s_local(self, r, p, p_local):
+        """The predicted S in crop-local seconds: S keeps its offset from P
+        through splices and crops."""
+        if p is None or pd.isna(r.get("s_sample")) or pd.isna(r.get("p_sample")):
+            return np.nan
+        return (p_local + float(r.s_sample) - float(r.p_sample)) / self.fs
 
     def _gap(self, missing: np.ndarray, protect: tuple[int, int] | None):
         """A synthetic gap, as ayzek sees them on the horizontals every day.
@@ -116,9 +174,17 @@ class OnsetDataset(Dataset):
         wave, missing = self.store.read(r.key)
         p = float(r.p_sample) if r.kind == "event" and pd.notna(r.p_sample) else None
         ctx = self._context(r.context_key)
-        if self.train and ctx is not None and self.rng.random() < self.data.lead_in_p:
-            wave, missing, shift = self._lead_in(wave, missing, ctx)
-            p = None if p is None else p + shift
+        if self.train:
+            if self.rng.random() < self.data.lead_in_p:
+                secs = self.rng.uniform(5.0, self.data.lead_in_max_s)
+                got = self._splice(r, wave, missing, p, self.rng, secs)
+                if got is not None:
+                    wave, missing, p = got
+        elif self.data.eval_lead_in_s > 0:
+            got = self._splice(r, wave, missing, p, np.random.default_rng(i),
+                               self.data.eval_lead_in_s)
+            if got is not None:
+                wave, missing, p = got
         a, b = self._crop(len(wave), p)
         wave, missing = wave[a:b], missing[a:b].copy()
         p_local = None if p is None else p - a
@@ -150,4 +216,40 @@ class OnsetDataset(Dataset):
                 **{k: torch.from_numpy(v) for k, v in t.items()},
                 "is_event": torch.tensor(p is not None),
                 "p_s": torch.tensor(np.nan if p_local is None else p_local / self.fs),
-                "tol_s": torch.tensor(tol), "index": torch.tensor(i)}
+                "tol_s": torch.tensor(tol), "index": torch.tensor(i),
+                # Geometry targets; NaN where unknown (noise, or a Z12 instrument's
+                # back-azimuth). The S time is local, like P, for the evaluation.
+                "dist_km": torch.tensor(float(r.distance_km) if p is not None
+                                        and pd.notna(r.get("distance_km")) else np.nan),
+                "baz_rad": torch.tensor(np.radians(float(r.back_azimuth_deg))
+                                        if p is not None and pd.notna(r.get("back_azimuth_deg"))
+                                        else np.nan),
+                "s_s": torch.tensor(self._s_local(r, p, p_local)),
+                "n_tokens": torch.tensor(len(x) // self.stride)}
+
+
+def pad_collate(items):
+    """Batches examples of different lengths (evaluation, where a splice
+    lengthens some traces and not others). Padding goes at the end, marked
+    missing; the model is causal, so it cannot change any real token, and
+    `n_tokens` says where each example's real tokens stop."""
+    L = max(len(it["x"]) for it in items)
+    stride = len(items[0]["x"]) // len(items[0]["y"])
+    out = {}
+    for k in items[0]:
+        vals = [it[k] for it in items]
+        if k == "x":
+            n = L
+        elif k in ("y", "w", "dt", "dt_mask"):
+            n = L // stride
+        else:
+            out[k] = torch.stack(vals)          # scalars, and the fixed-length context
+            continue
+        padded = []
+        for v in vals:
+            fill = torch.zeros((n - len(v),) + tuple(v.shape[1:]), dtype=v.dtype)
+            if k == "x":
+                fill[:, 3] = 1.0
+            padded.append(torch.cat([v, fill]))
+        out[k] = torch.stack(padded)
+    return out

@@ -27,6 +27,8 @@ COLUMNS = [
     "magnitude", "depth_km", "distance_km", "start_time", "n_samples",
     "missing_fraction", "p_sample", "p_source", "p_tolerance_s",
     "p_predicted_sample", "s_sample", "pick_snr", "context_key",
+    "station_lat", "station_lon", "event_lat", "event_lon", "components",
+    "back_azimuth_deg",
 ]
 KINDS = ("event", "noise", "context")
 

@@ -102,7 +102,10 @@ def build(argv=None):
                     "distance_km": r.source_distance_km, "start_time": r.trace_start_time,
                     "p_sample": float(r.p_arrival_sample), "p_source": "manual",
                     "p_tolerance_s": MANUAL_TOLERANCE_S,
-                    "s_sample": float(r.s_arrival_sample) if r.s_status == "manual" else None})
+                    "s_sample": float(r.s_arrival_sample) if r.s_status == "manual" else None,
+                    "station_lat": r.receiver_latitude, "station_lon": r.receiver_longitude,
+                    "event_lat": r.source_latitude, "event_lon": r.source_longitude,
+                    "components": "ZNE", "back_azimuth_deg": r.back_azimuth_deg})
                 if i % 10_000 == 0:
                     print(f"  {h5_path}: {i}/{len(group)}", flush=True)
     writer.close({"args": vars(a), "dropped": dict(drops)})

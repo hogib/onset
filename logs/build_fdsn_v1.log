@@ -27,3 +27,10 @@
   27000/33795 files  {'context': 14870, 'event': 40910, 'noise': 15242}  100s
   28000/33795 files  {'context': 15531, 'event': 42463, 'noise': 15933}  103s
   29000/33795 files  {'context': 16425, 'event': 45013, 'noise': 16762}  107s
+  30000/33795 files  {'context': 17247, 'event': 47049, 'noise': 17565}  115s
+  31000/33795 files  {'context': 17553, 'event': 49108, 'noise': 17867}  120s
+  32000/33795 files  {'context': 18058, 'event': 51157, 'noise': 18342}  125s
+  33000/33795 files  {'context': 18632, 'event': 53059, 'noise': 18892}  130s
+  33795/33795 files  {'context': 19141, 'event': 54473, 'noise': 19402}  134s
+wrote {'context': 19141, 'event': 54473, 'noise': 19402} to datasets/fdsn_v1
+dropped: {'context_absent': 34797, 'noise_absent': 34684, 'event_gappy': 1812, 'earlier_arrival_in_window': 929, 'context_gappy': 492, 'noise_gappy': 332, 'noise_short': 38, 'context_short': 27, 'noise_contaminated': 17, 'context_contaminated': 16, 'unreadable': 1}

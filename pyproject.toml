@@ -1,7 +1,7 @@
 [project]
 name = "onset"
 version = "0.1.0"
-description = "Add your description here"
+description = "Streaming earthquake onset detection: a causal transformer over the near past with a station context"
 readme = "README.md"
 authors = [
     { name = "Oguzb", email = "hoguzbolat@gmail.com" }

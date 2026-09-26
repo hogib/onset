@@ -35,6 +35,9 @@ class ModelConfig:
     dropout: float = 0.1
     max_dt_s: float = 10.0
     sample_rate: float = SAMPLE_RATE
+    # 1 adds the geometry head: epicentral distance and back-azimuth, each
+    # with its own uncertainty, for every token after P (model.py).
+    geometry: int = 0
 
     @property
     def stride(self) -> int:
@@ -73,8 +76,11 @@ class DataConfig:
     fallback_scale_s: float = 1.0        # scale from the crop's first second when no context
     gap_aug_p: float = 0.2               # probability of inserting a synthetic gap
     gap_aug_max_s: float = 3.0
-    lead_in_p: float = 0.5               # prepend station noise across a gap (data.py)
-    lead_in_max_s: float = 40.0
+    lead_in_p: float = 0.8               # splice older station noise in front (data.py)
+    lead_in_max_s: float = 45.0
+    eval_lead_in_s: float = 40.0         # evaluation: longer than the lookback
+    splice_trim_s: float = 1.5           # drop the trace's filter start-up first
+    splice_xfade_s: float = 0.5
     early_s: float = 1.0                 # first second after P is up-weighted ...
     early_weight: float = 2.0
     pre_s: float = 2.0                   # ... and so are the two seconds before it
@@ -90,6 +96,7 @@ class TrainConfig:
     weight_decay: float = 0.05
     warmup_steps: int = 1000
     dt_weight: float = 0.1
+    geo_weight: float = 0.1              # geometry head's share of the loss
     noise_fraction: float = 0.5          # of each batch, drawn from noise traces
     fallback_weight: float = 0.0         # share of event draws from --fallback sources
     fa_target_per_hour: float = 1.0      # operating point used for model selection

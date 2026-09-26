@@ -164,7 +164,7 @@ def test_training_crop_keeps_p_and_a_second_of_noise(store):
 
 def test_evaluation_uses_whole_traces_and_context(store):
     from onset.data import OnsetDataset
-    ds = OnsetDataset(store, "train", DataConfig(), ModelConfig(), False)
+    ds = OnsetDataset(store, "train", DataConfig(eval_lead_in_s=0), ModelConfig(), False)
     kinds = ds.rows.kind.tolist()
     ev, no = ds[kinds.index("event")], ds[kinds.index("noise")]
     assert ev["x"].shape == (6000, 4) and bool(ev["has_ctx"])
@@ -201,3 +201,69 @@ def test_lead_in_spreads_the_history_before_p(store):
         seen.append(float(b["p_s"]))
         assert b["x"].shape == (4000, 4) and b["y"].sum() > 0
     assert max(seen) > 20.0 and min(seen) >= 1.0 - 1e-6
+
+
+def test_the_splice_leaves_no_seam(store):
+    """The lead-in joins without a gap and at the event's own noise level: a
+    gap or a level step would be a cue that onsets follow joins."""
+    from onset.data import OnsetDataset
+    ds = OnsetDataset(store, "train", DataConfig(), ModelConfig(), False)
+    r = ds.rows[ds.rows.kind == "event"].iloc[0]
+    wave, missing = ds.store.read(r.key)
+    w, m, p = ds._splice(r, wave, missing, float(r.p_sample), np.random.default_rng(0), 30.0)
+    assert not m.any()
+    assert p == pytest.approx(700 - 150 + 3000)          # trimmed 1.5 s, added 30 s
+    seam = 3000
+    before = np.sqrt((w[seam - 300: seam - 50] ** 2).mean(axis=0))
+    after = np.sqrt((w[seam + 50: seam + 300] ** 2).mean(axis=0))
+    assert np.allclose(before, after, rtol=0.35)
+
+
+def test_evaluation_splices_past_the_lookback(store):
+    from onset.data import OnsetDataset, pad_collate
+    mc = ModelConfig()
+    ds = OnsetDataset(store, "train", DataConfig(eval_lead_in_s=40), mc, False)
+    kinds = ds.rows.kind.tolist()
+    ev = ds[kinds.index("event")]
+    assert float(ev["p_s"]) == pytest.approx(7.0 - 1.5 + 40.0)
+    assert float(ev["p_s"]) > mc.lookback_tokens * mc.token_seconds
+    no = ds[kinds.index("noise")]
+    b = pad_collate([ev, no])
+    assert b["x"].shape[1] == max(len(ev["x"]), len(no["x"]))
+    short = min(ev, no, key=lambda it: len(it["x"]))
+    k = [ev, no].index(short)
+    assert (b["x"][k, len(short["x"]):, 3] == 1).all()
+    assert int(b["n_tokens"][k]) == len(short["y"])
+
+
+# -- geometry head -----------------------------------------------------------
+
+def test_geometry_head_trains_and_leaves_detection_alone(store):
+    """The head adds outputs; with it off, the model is the detector as before."""
+    from torch.utils.data import DataLoader
+    from onset.data import OnsetDataset
+    from onset.model import OnsetDetector
+    from onset.train import loss_fn
+    mc = ModelConfig(d_model=32, n_layers=2, window_tokens=20, geometry=1)
+    ds = OnsetDataset(store, "train", DataConfig(seq_seconds=20), mc, True)
+    b = next(iter(DataLoader(ds, batch_size=3)))
+    out = OnsetDetector(mc)(b["x"], b["ctx"], b["has_ctx"])
+    assert {"log_dist", "log_dist_var", "baz_vec", "baz_log_kappa"} <= set(out)
+    loss, _, _ = loss_fn(out, b, 0.1, geo_weight=0.1)
+    loss.backward()
+    assert torch.isfinite(loss)
+    assert "log_dist" not in OnsetDetector(ModelConfig(d_model=32, n_layers=2))(b["x"])
+
+
+def test_geometry_table_reads_errors_by_time_since_p():
+    t_tok = 300
+    ev = {"p": np.zeros(t_tok), "missing_tokens": np.zeros(t_tok, bool), "p_s": 5.0,
+          "s_s": 12.0, "dist_km": 40.0, "baz_rad": np.radians(90.0),
+          "log_dist": np.full(t_tok, np.log(44.0)), "log_dist_var": np.full(t_tok, np.log(0.2 ** 2)),
+          "baz": np.full(t_tok, np.radians(100.0))}
+    rows = {r["window"]: r for r in metrics.geometry_table([ev], 10, FS)}
+    r = rows["1-2 s after P"]
+    assert r["dist_abs_err_km_p50"] == pytest.approx(4.0, rel=1e-6)
+    assert r["baz_err_deg_p50"] == pytest.approx(10.0, abs=1e-6)
+    assert r["cal_1sd"] == 1.0                     # |log(44/40)| = 0.095 < 0.2
+    assert "after S" in rows and "after P, before S" in rows

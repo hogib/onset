@@ -22,12 +22,13 @@ from torch.utils.data import DataLoader
 
 from onset import metrics
 from onset.config import DataConfig, ModelConfig, load_run_config
-from onset.data import OnsetDataset
+from onset.data import OnsetDataset, pad_collate
 from onset.model import OnsetDetector
 
 
 def length_batches(ds: OnsetDataset, batch_size: int) -> list[list[int]]:
-    """Whole traces differ in length by kind; batch equal lengths together."""
+    """Whole traces differ in length by kind; batch equal stored lengths
+    together, so a batch pads by at most the splice."""
     by_len = defaultdict(list)
     for i, n in enumerate(ds.rows.n_samples.to_numpy()):
         by_len[int(n)].append(i)
@@ -40,7 +41,7 @@ def predict(model: OnsetDetector, ds: OnsetDataset, device, batch_size=64, worke
     """Runs whole traces. Returns (events, noise) lists for `metrics.sweep`."""
     model.eval()
     loader = DataLoader(ds, batch_sampler=length_batches(ds, batch_size),
-                        num_workers=workers)
+                        num_workers=workers, collate_fn=pad_collate)
     stride = model.cfg.stride
     events, noise = [], []
     amp = device.type == "cuda"
@@ -49,14 +50,26 @@ def predict(model: OnsetDetector, ds: OnsetDataset, device, batch_size=64, worke
             out = model(b["x"].to(device), b["ctx"].to(device), b["has_ctx"].to(device))
         p = torch.sigmoid(out["logit"].float()).cpu().numpy()
         dt = out["dt"].float().cpu().numpy()
+        geo = None
+        if "log_dist" in out:
+            v = out["baz_vec"].float()
+            geo = {"log_dist": out["log_dist"].float().cpu().numpy(),
+                   "log_dist_var": out["log_dist_var"].float().cpu().numpy(),
+                   "baz": torch.atan2(v[..., 0], v[..., 1]).cpu().numpy(),
+                   "baz_log_kappa": out["baz_log_kappa"].float().cpu().numpy()}
         x = b["x"].numpy()
         n_tok = p.shape[1]
         miss = x[:, : n_tok * stride, 3].reshape(len(x), n_tok, stride).max(-1) > 0
         for k in range(len(p)):
-            item = {"p": p[k], "dt": dt[k], "missing_tokens": miss[k],
+            n = int(b["n_tokens"][k])
+            item = {"p": p[k, :n], "dt": dt[k, :n], "missing_tokens": miss[k, :n],
                     "index": int(b["index"][k]), "has_ctx": bool(b["has_ctx"][k])}
+            if geo is not None:
+                item.update({g: v[k, :n] for g, v in geo.items()})
             if bool(b["is_event"][k]):
-                events.append({**item, "p_s": float(b["p_s"][k]), "tol_s": float(b["tol_s"][k])})
+                events.append({**item, "p_s": float(b["p_s"][k]), "tol_s": float(b["tol_s"][k]),
+                               "dist_km": float(b["dist_km"][k]), "baz_rad": float(b["baz_rad"][k]),
+                               "s_s": float(b["s_s"][k])})
             else:
                 noise.append(item)
     return events, noise
@@ -87,12 +100,24 @@ def print_summary(title: str, s: dict, n_events: int, noise_hours: float):
     print(f"\n{title}")
     print(f"  events {n_events}   noise {noise_hours:.1f} h   "
           f"false-trigger budget {s['fa_target_per_hour']}/h")
-    print(f"  threshold {s['threshold']:.3f}   false triggers {s['false_per_hour']:.2f}/h   "
+    print(f"  threshold {s['threshold']:.6f}   false triggers {s['false_per_hour']:.2f}/h   "
           f"early (pre-P) triggers on events {s['early_rate']:.1%}")
     print("  recall  " + "  ".join(f"≤{d:g}s {s[f'recall@{d}s']:.1%}" for d in metrics.DELAYS_S)
           + f"   ever {s['detected']:.1%}")
     print(f"  median latency {s['latency_p50_s']:.2f} s   "
           f"median onset error from dt {s['onset_abs_err_p50_s']:.2f} s")
+
+
+def print_geometry(rows):
+    if not rows:
+        return
+    print("\n  where is it (geometry head), per event, median over its tokens")
+    print(f"    {'window':<22s} {'n':>5} {'dist err km':>11} {'dist err %':>10} "
+          f"{'within 1 sd':>11} {'baz err deg':>11}")
+    for r in rows:
+        print(f"    {r['window']:<22s} {r['n']:>5} {r['dist_abs_err_km_p50']:>11.1f} "
+              f"{100 * r['dist_rel_err_p50']:>9.0f}% {r['cal_1sd']:>11.0%} "
+              f"{r['baz_err_deg_p50']:>11.0f}")
 
 
 def main(argv=None):
@@ -123,6 +148,8 @@ def main(argv=None):
 
     name = f"{Path(a.data).name}_{a.split}" + ("_noctx" if a.no_context else "")
     print_summary(f"{a.run_dir} on {name}", s, len(events), hours)
+    geo_rows = metrics.geometry_table(events, mcfg.stride, mcfg.sample_rate)
+    print_geometry(geo_rows)
     table = per_trace(events, ds, mcfg.stride, mcfg.sample_rate, s["threshold"])
     if len(table):
         table["mag_bin"] = pd.cut(table.magnitude, [-9, 2, 3, 4, 5, 10],
@@ -137,7 +164,8 @@ def main(argv=None):
         print("\n  by label source\n" + by_src.round(3).to_string())
     out = Path(a.run_dir)
     (out / f"eval_{name}.json").write_text(json.dumps(
-        {"summary": s, "sweep": rows, "n_events": len(events), "noise_hours": hours},
+        {"summary": s, "sweep": rows, "n_events": len(events), "noise_hours": hours,
+         "geometry": geo_rows},
         indent=2, default=float))
     table.to_csv(out / f"eval_{name}.csv", index=False)
     print(f"\n  -> {out / f'eval_{name}.json'}")

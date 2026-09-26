@@ -32,9 +32,10 @@ from pathlib import Path
 
 import numpy as np
 from obspy import Stream, UTCDateTime, read
+from obspy.geodetics import gps2dist_azimuth
 
-from onset.catalog import (S_PHASES, Catalog, TravelTimes, distance_km,
-                           load_stations)
+from onset.catalog import (S_PHASES, VISIBILITY, Catalog, TravelTimes,
+                           distance_km, load_stations)
 from onset.config import SAMPLE_RATE
 from onset.dsp import filter_components
 from onset.labels import refine_p
@@ -60,6 +61,13 @@ def _init(catalog_path, stations_path, cfg):
 
 def instruments(st: Stream) -> dict:
     """{(network, station): [Z, N, E] trace lists} for the preferred instrument."""
+    return {k: comps for k, (comps, _) in instruments_with_set(st).items()}
+
+
+def instruments_with_set(st: Stream) -> dict:
+    """{(network, station): ([Z, N, E] trace lists, "ZNE" or "Z12")}. A Z12
+    instrument's horizontals are not known to point north and east, so its
+    back-azimuth label is withheld."""
     groups = defaultdict(list)
     for tr in st:
         ch = tr.stats.channel
@@ -73,8 +81,8 @@ def instruments(st: Stream) -> dict:
             continue
         rank = (BANDS.index(band), loc != "", loc)
         if (net, sta) not in best or rank < best[(net, sta)][0]:
-            best[(net, sta)] = (rank, [[t for t in trs if t.stats.channel[2] == c]
-                                       for c in chosen])
+            best[(net, sta)] = (rank, ([[t for t in trs if t.stats.channel[2] == c]
+                                        for c in chosen], "".join(chosen)))
     return {k: v[1] for k, v in best.items()}
 
 
@@ -164,34 +172,46 @@ def process_file(path: Path):
     fs = SAMPLE_RATE
     n = int(cfg["event_seconds"] * fs)
     origin = UTCDateTime(ev.origin)
-    for (net, sta), comps in instruments(st).items():
+    offset = cfg["event_start_offset"]            # window start relative to origin
+    t0 = origin + offset
+    for (net, sta), (comps, comp_set) in instruments_with_set(st).items():
         coords = _W["stations"].get((net, sta)) or _W["stations"].get(sta)
         if coords is None:
             drops["no_station_coords"] += 1
             continue
         lat, lon = coords
-        wave, missing = load_window(comps, origin, n)
+        dist = distance_km(ev.lat, ev.lon, lat, lon)
+        # A far station for a small event records nothing: labelling its
+        # window "event" would teach the model to fire on noise.
+        if not any(dist <= dmax and ev.magnitude >= mmin for dmax, mmin in VISIBILITY):
+            drops["not_visible_at_distance"] += 1
+            continue
+        wave, missing = load_window(comps, t0, n)
         if missing.mean() > cfg["max_missing"]:
             drops["event_gappy"] += 1
             continue
-        dist = distance_km(ev.lat, ev.lon, lat, lon)
         tp = taup.first(dist, ev.depth_km)
         ts = taup.first(dist, ev.depth_km, S_PHASES)
-        if tp is None or tp * fs > n - 2 * fs:
+        if tp is None or (tp - offset) * fs > n - 2 * fs:
             drops["p_outside_window"] += 1
             continue
-        if cat.arrivals(lat, lon, ev.origin - 30.0, ev.origin + tp, taup, exclude=ev.event_id):
+        if cat.arrivals(lat, lon, float(t0.timestamp) - 30.0, ev.origin + tp, taup,
+                        exclude=ev.event_id):
             drops["earlier_arrival_in_window"] += 1
             continue
-        p_pred = tp * fs
-        s_pred = ts * fs if ts is not None else float("nan")
+        p_pred = (tp - offset) * fs
+        s_pred = (ts - offset) * fs if ts is not None else float("nan")
         pick, ok, snr = refine_p(wave[:, 0], missing, p_pred, fs, s_pred)
         source = "aic" if ok else "taup"
 
         split = station_split(net, sta)
+        baz = gps2dist_azimuth(lat, lon, ev.lat, ev.lon)[1]    # station -> event
         base = {"split": split, "source": "fdsn", "network": net, "station": sta,
                 "event_id": ev.event_id, "magnitude": ev.magnitude,
-                "depth_km": ev.depth_km, "distance_km": dist}
+                "depth_km": ev.depth_km, "distance_km": dist,
+                "station_lat": lat, "station_lon": lon,
+                "event_lat": ev.lat, "event_lon": ev.lon, "components": comp_set,
+                "back_azimuth_deg": baz if comp_set == "ZNE" else float("nan")}
         ctx_key = None
         if (net, sta) in side["context"]:
             got = _clean_tail(side["context"][(net, sta)], cfg["context_seconds"],
@@ -204,7 +224,7 @@ def process_file(path: Path):
             drops["context_absent"] += 1
 
         records.append((f"event/{ev.event_id}/{net}.{sta}", wave, missing, {
-            **base, "kind": "event", "start_time": str(origin), "p_sample": pick,
+            **base, "kind": "event", "start_time": str(t0), "p_sample": pick,
             "p_source": source, "p_tolerance_s": TOLERANCE_S[source],
             "p_predicted_sample": p_pred, "s_sample": s_pred, "pick_snr": snr,
             "context_key": ctx_key}))
@@ -241,6 +261,9 @@ def parse_args(argv=None):
     p.add_argument("--stations", default=f"{root}/catalogs/station_coords.csv")
     p.add_argument("--out", required=True)
     p.add_argument("--event-seconds", type=float, default=60.0)
+    p.add_argument("--event-start-offset", type=float, default=0.0,
+                   help="Event window start relative to origin, seconds: 0 for "
+                        "window_post_60s, -60 for a pull that starts a minute early.")
     p.add_argument("--context-seconds", type=float, default=120.0)
     p.add_argument("--noise-seconds", type=float, default=120.0)
     p.add_argument("--max-missing", type=float, default=0.10,
@@ -255,7 +278,8 @@ def main(argv=None):
     a = parse_args(argv)
     files = sorted(Path(a.events_dir).glob("event_*_raw.mseed"))[: a.limit]
     cfg = {k: getattr(a, k) for k in ("events_dir", "context_dir", "noise_dir",
-                                       "event_seconds", "context_seconds",
+                                       "event_seconds", "event_start_offset",
+                                       "context_seconds",
                                        "noise_seconds", "max_missing",
                                        "max_context_missing")}
     writer = StoreWriter(a.out)

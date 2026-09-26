@@ -226,6 +226,10 @@ class OnsetDetector(nn.Module):
         self.blocks = nn.ModuleList(Block(cfg) for _ in range(cfg.n_layers))
         self.ln_out = nn.LayerNorm(d)
         self.head = nn.Linear(d, 2)
+        if cfg.geometry:
+            # log distance, its log-variance, a back-azimuth direction (sin,
+            # cos, unnormalised) and the log of its von Mises concentration.
+            self.geo_head = nn.Linear(d, 5)
         self.register_buffer("slopes", alibi_slopes(cfg.n_heads), persistent=False)
 
     def encode_context(self, ctx, has_ctx, batch_size: int):
@@ -237,9 +241,27 @@ class OnsetDetector(nn.Module):
         return torch.where(has_ctx[:, None, None], enc, null)
 
     def readout(self, h):
-        """Final hidden state -> (logit, dt seconds)."""
-        out = self.head(self.ln_out(h))
+        """Final hidden state -> (logit, dt seconds).
+
+        Always in fp32. A trained detector's logits sit around 5–12, where bf16
+        resolves only ~0.03–0.06, so under autocast the probabilities near 1
+        (exactly where the operating thresholds are) come out quantized.
+        """
+        with torch.autocast(h.device.type, enabled=False):
+            out = self.head(self.ln_out(h.float()))
         return out[..., 0], self.cfg.max_dt_s * torch.sigmoid(out[..., 1])
+
+    def geometry(self, h):
+        """Final hidden state -> where the event is, as seen from this station.
+
+        Only meaningful after P. Before S the model can only infer distance from
+        the P wave itself; once S is inside its lookback it can in effect read
+        the S-P time, and the stated uncertainty should shrink to match.
+        """
+        with torch.autocast(h.device.type, enabled=False):
+            g = self.geo_head(self.ln_out(h.float()))
+        return {"log_dist": g[..., 0], "log_dist_var": g[..., 1].clamp(-8.0, 6.0),
+                "baz_vec": g[..., 2:4], "baz_log_kappa": g[..., 4].clamp(-4.0, 8.0)}
 
     def forward(self, x, ctx=None, has_ctx=None):
         """
@@ -260,7 +282,10 @@ class OnsetDetector(nn.Module):
         for block in self.blocks:
             h = block(h, c, bias[None])
         logit, dt = self.readout(h)
-        return {"logit": logit, "dt": dt}
+        out = {"logit": logit, "dt": dt}
+        if self.cfg.geometry:
+            out.update(self.geometry(h))
+        return out
 
 
 def count_parameters(model: nn.Module) -> int:

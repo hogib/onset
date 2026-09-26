@@ -9,5 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
+# Data and outputs: large, and rebuilt from the commands in README.md
 datasets/
-
+runs/
+replays/
+logs/
