@@ -267,3 +267,144 @@ def test_geometry_table_reads_errors_by_time_since_p():
     assert r["baz_err_deg_p50"] == pytest.approx(10.0, abs=1e-6)
     assert r["cal_1sd"] == 1.0                     # |log(44/40)| = 0.095 < 0.2
     assert "after S" in rows and "after P, before S" in rows
+
+
+# -- second onsets and the deployed trigger ------------------------------------
+
+def test_second_onset_restarts_dt_and_keeps_y():
+    t = token_targets(100, 10, p_sample=205, tolerance_samples=0, sample_rate=FS, max_dt_s=10,
+                      second_sample=605, second_tolerance_samples=15)
+    ends = np.arange(100) * 10 + 9
+    assert (t["y"][ends >= 205] == 1).all()
+    assert t["dt"][ends == 599][0] == pytest.approx(3.94)          # the first event's
+    assert t["dt"][ends == 619][0] == pytest.approx(0.14)          # restarted at 605
+    assert (t["dt_mask"][np.abs(ends - 605) < 15] == 0).all()
+
+
+def token_trigger_reference(p, dt, thr, rel, below, frm, ntok):
+    """Token by token, as ayzek's src/pipeline/trigger.hpp."""
+    out, armed, peak, low = [], True, 0.0, 0
+    for i in range(len(p)):
+        if p[i] < rel:
+            armed, peak, low = True, 0.0, 0
+            continue
+        if p[i] < thr:
+            peak, low = max(peak, dt[i]), 0
+            continue
+        fire = False
+        if armed:
+            fire = True
+        elif peak >= frm and dt[i] <= below:
+            low += 1
+            fire = low >= ntok
+        else:
+            low = 0
+        armed = False
+        if fire:
+            out.append(i)
+            peak, low = dt[i], 0
+        else:
+            peak = max(peak, dt[i])
+    return out
+
+
+def test_trigger_tokens_is_ayzeks_trigger():
+    rng = np.random.default_rng(7)
+    for seed in range(40):
+        n = 600
+        # Events: p high over stretches, dt a sawtooth that restarts at random.
+        p = np.where(rng.random(n) < 0.02, 0.95, 0.1)
+        p = np.convolve(p, np.ones(40), "same").clip(0, 1) + rng.normal(0, 0.02, n)
+        dt = np.zeros(n)
+        for i in range(1, n):
+            dt[i] = 0.0 if rng.random() < 0.02 else min(10.0, dt[i - 1] + 0.1 + rng.normal(0, 0.3))
+        for ntok in (1, 2, 3):
+            rule = metrics.TriggerRule(True, 2.0, 5.0, ntok, min_gap_s=0.0)
+            got = metrics.trigger_tokens(p, dt, 0.9, 0.45, 10, FS, rule).tolist()
+            assert got == token_trigger_reference(p, dt, 0.9, 0.45, 2.0, 5.0, ntok), (seed, ntok)
+        off = metrics.TriggerRule(False, min_gap_s=0.0)
+        assert (metrics.trigger_tokens(p, dt, 0.9, 0.45, 10, FS, off).tolist()
+                == metrics.rising_edges(p, 0.9, 0.45).tolist())
+
+
+def test_trigger_gap_drops_close_p_dates():
+    p = np.full(400, 0.99)
+    p[0] = 0.0
+    dt = np.minimum(10.0, 0.1 * np.arange(400))
+    dt[150:] = np.minimum(10.0, 0.1 * np.arange(250))            # restart at 15 s
+    dt[80:] = np.where(np.arange(80, 400) < 150, 0.0, dt[80:])  # and one at 8 s
+    rule = metrics.TriggerRule(True, 2.0, 5.0, 2, min_gap_s=15.0)
+    edges = metrics.trigger_tokens(p, dt, 0.9, 0.45, 10, FS, rule).tolist()
+    t = metrics.token_times(400, 10, FS)
+    dates = t[edges] - dt[edges]
+    assert edges[0] == 1 and np.all(np.diff(dates) >= 15.0)
+
+
+def test_sweep_scores_second_onsets():
+    stride, n = 10, 600
+    p = np.zeros(n)
+    p[100:] = 0.99                                  # first onset at 10 s, never releases
+    dt = np.minimum(10.0, np.maximum(0.0, 0.1 * (np.arange(n) - 100)))
+    dt[400:] = np.minimum(10.0, 0.1 * np.arange(200))  # restart at 40 s
+    e = {"p": p, "dt": dt, "p_s": 10.0, "tol_s": 0.3, "p2_s": 40.0, "tol2_s": 0.3}
+    rows_on = metrics.sweep([e], [], stride, FS, thresholds=[0.9], rule=metrics.TriggerRule())
+    rows_off = metrics.sweep([e], [], stride, FS, thresholds=[0.9])
+    assert rows_on[0]["second_n"] == 1 and rows_on[0]["second_recall@1.0s"] == 1.0
+    assert rows_off[0]["second_recall@1.0s"] == 0.0
+    assert rows_on[0]["onset_recall@1.0s"] == 1.0 and rows_off[0]["onset_recall@1.0s"] == 0.5
+
+
+@pytest.fixture
+def two_event_store(tmp_path):
+    rng = np.random.default_rng(5)
+    w = StoreWriter(tmp_path)
+    sta = next(s for s in (f"S{i}" for i in range(100)) if station_split("XX", s) == "train")
+    base = {"split": "train", "source": "fdsn", "network": "XX", "station": sta}
+    w.add("context/1/XX.S", rng.normal(0, 1, (12000, 3)).astype(np.float32),
+          np.zeros(12000, bool), {**base, "kind": "context"})
+    for k, amp in ((1, 20.0), (2, 5.0)):
+        ev = rng.normal(0, 1, (6000, 3)).astype(np.float32)
+        ev[700:] *= amp * np.exp(-np.arange(5300) / 1500)[:, None] + 1
+        w.add(f"event/{k}/XX.S", ev, np.zeros(6000, bool),
+              {**base, "kind": "event", "p_sample": 700.0, "p_source": "aic",
+               "p_tolerance_s": 0.3, "context_key": "context/1/XX.S", "magnitude": 3.0})
+    w.close()
+    return tmp_path
+
+
+def test_second_event_goes_into_the_coda(two_event_store):
+    from onset.data import OnsetDataset
+    dc = DataConfig(seq_seconds=40, gap_aug_p=0, lead_in_p=0, second_p=1.0)
+    ds = OnsetDataset(two_event_store, "train", dc, ModelConfig(), True)
+    seen = 0
+    for seed in range(20):
+        ds.reseed(seed)
+        b = ds[0]
+        if not np.isfinite(float(b["p2_s"])):
+            continue
+        seen += 1
+        p1, p2 = float(b["p_s"]), float(b["p2_s"])
+        assert dc.second_min_s - 1e-6 <= p2 - p1 <= dc.second_max_s + 1e-6
+        ends = (np.arange(len(b["y"])) * 10 + 9) / FS
+        after = ends >= p2 + 0.5
+        assert (b["y"].numpy()[ends >= p1 + 0.5] == 1).all()
+        assert np.allclose(b["dt"].numpy()[after], np.minimum(10, ends[after] - p2), atol=1e-4)
+        assert (b["geo_mask"].numpy()[ends >= p2 - 0.3] == 0).all()
+        # the added event raises the level at its P
+        x = b["x"].numpy()[:, :3]
+        k = int(p2 * FS)
+        assert np.abs(x[k:k + 200]).mean() > np.abs(x[k - 250:k - 50]).mean()
+    assert seen >= 10
+
+
+def test_evaluation_adds_second_onsets_to_every_nth_event(two_event_store):
+    from onset.data import OnsetDataset
+    ds = OnsetDataset(two_event_store, "train", DataConfig(eval_lead_in_s=0, eval_second_every=2),
+                      ModelConfig(), False)
+    ev = [i for i, k in enumerate(ds.rows.kind) if k == "event"]
+    got = [np.isfinite(float(ds[i]["p2_s"])) for i in ev]
+    assert got == [i % 2 == 1 for i in ev]
+    again = OnsetDataset(two_event_store, "train", DataConfig(eval_lead_in_s=0, eval_second_every=2),
+                         ModelConfig(), False)
+    k = ev[1]
+    assert float(again[k]["p2_s"]) == float(ds[k]["p2_s"])        # a fixed draw

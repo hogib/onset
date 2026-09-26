@@ -80,8 +80,9 @@ def lr_at(step, tcfg):
 
 def geometry_loss(out, b):
     """Gaussian NLL on log distance and von Mises NLL on back-azimuth, over the
-    tokens where dt is trained (after P, outside the label's tolerance)."""
-    m = b["dt_mask"]
+    tokens where dt is trained (after P, outside the label's tolerance) and,
+    with a second event added, before its P: the targets are the first event's."""
+    m = b.get("geo_mask", b["dt_mask"])
     d_ok = torch.isfinite(b["dist_km"])[:, None] & (m > 0)
     y = torch.log(torch.nan_to_num(b["dist_km"], nan=1.0).clamp_min(1.0))[:, None]
     mu, lv = out["log_dist"].float(), out["log_dist_var"].float()
@@ -166,6 +167,7 @@ def main(argv=None):
                         pin_memory=amp, persistent_workers=tcfg.num_workers > 0,
                         drop_last=True)
     val_ds = OnsetDataset(a.data, "val", dcfg, mcfg, train=False)
+    rule = metrics.TriggerRule.from_config(tcfg, mcfg)
     print(f"  val {len(val_ds)} traces")
 
     opt = torch.optim.AdamW(model.parameters(), lr=tcfg.lr, weight_decay=tcfg.weight_decay)
@@ -193,7 +195,7 @@ def main(argv=None):
             step += 1
 
         events, noise = predict(model, val_ds, device, workers=tcfg.num_workers)
-        rows = metrics.sweep(events, noise, mcfg.stride, mcfg.sample_rate)
+        rows = metrics.sweep(events, noise, mcfg.stride, mcfg.sample_rate, rule=rule)
         s = metrics.summary(rows, tcfg.fa_target_per_hour)
         loss_avg = sums / max(1, n)
         geo = metrics.geometry_table(events, mcfg.stride, mcfg.sample_rate) if mcfg.geometry else []
@@ -204,7 +206,10 @@ def main(argv=None):
         print(f"epoch {epoch + 1:3d}  loss {loss_avg[0]:.4f} (bce {loss_avg[1]:.4f} "
               f"dt {loss_avg[2]:.3f})  val recall@1s {s['recall@1.0s']:.3f} "
               f"@thr {s['threshold']:.5f} ({s['false_per_hour']:.2f} FA/h)  "
-              f"lat p50 {s['latency_p50_s']:.2f}s  {time.time() - t0:.0f}s"
+              f"lat p50 {s['latency_p50_s']:.2f}s"
+              + (f"  second@2s {s['second_recall@2.0s']:.3f}  score {s['score']:.3f}"
+                 if s.get("second_n") else "")
+              + f"  {time.time() - t0:.0f}s"
               + "".join(f"  | {g['window'].split(' after')[0]}: {g['dist_abs_err_km_p50']:.1f} km"
                         f" {g['baz_err_deg_p50']:.0f}°" for g in geo
                         if g["window"] in ("1-2 s after P", "after S")), flush=True)
@@ -215,7 +220,8 @@ def main(argv=None):
             (out / "val_best.json").write_text(json.dumps(
                 {"epoch": epoch + 1, "summary": s, "sweep": rows, "geometry": geo},
                 indent=2, default=float))
-            print(f"          -> best.pt (recall@1s {best:.3f})")
+            print(f"          -> best.pt (score {best:.3f}: recall within 1 s over "
+                  f"first and second onsets)")
 
     hours = sum((~x["missing_tokens"]).sum() for x in noise) * mcfg.token_seconds / 3600
     best_rec = json.loads((out / "val_best.json").read_text())

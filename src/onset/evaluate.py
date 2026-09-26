@@ -69,17 +69,18 @@ def predict(model: OnsetDetector, ds: OnsetDataset, device, batch_size=64, worke
             if bool(b["is_event"][k]):
                 events.append({**item, "p_s": float(b["p_s"][k]), "tol_s": float(b["tol_s"][k]),
                                "dist_km": float(b["dist_km"][k]), "baz_rad": float(b["baz_rad"][k]),
-                               "s_s": float(b["s_s"][k])})
+                               "s_s": float(b["s_s"][k]), "p2_s": float(b["p2_s"][k]),
+                               "tol2_s": float(b["tol2_s"][k])})
             else:
                 noise.append(item)
     return events, noise
 
 
-def per_trace(events, ds, stride, fs, thr, release_ratio=0.5) -> pd.DataFrame:
+def per_trace(events, ds, stride, fs, thr, release_ratio=0.5, rule=None) -> pd.DataFrame:
     rows = []
     for e in events:
         lat, early, onset = metrics.score_event(e["p"], e["dt"], e["p_s"], e["tol_s"],
-                                                stride, fs, thr, thr * release_ratio)
+                                                stride, fs, thr, thr * release_ratio, rule)
         r = ds.rows.iloc[e["index"]]
         rows.append({"key": r.key, "station": r.station, "magnitude": r.magnitude,
                      "distance_km": r.distance_km, "p_source": r.p_source,
@@ -104,6 +105,10 @@ def print_summary(title: str, s: dict, n_events: int, noise_hours: float):
           f"early (pre-P) triggers on events {s['early_rate']:.1%}")
     print("  recall  " + "  ".join(f"≤{d:g}s {s[f'recall@{d}s']:.1%}" for d in metrics.DELAYS_S)
           + f"   ever {s['detected']:.1%}")
+    if s.get("second_n"):
+        print(f"  second onsets in the coda ({s['second_n']}): recall  "
+              + "  ".join(f"≤{d:g}s {s[f'second_recall@{d}s']:.1%}" for d in metrics.DELAYS_S)
+              + f"   both onsets ≤1s {s['onset_recall@1.0s']:.1%}")
     print(f"  median latency {s['latency_p50_s']:.2f} s   "
           f"median onset error from dt {s['onset_abs_err_p50_s']:.2f} s")
 
@@ -142,7 +147,8 @@ def main(argv=None):
         ds.contexts = set()        # every trace then falls back to the null context
     events, noise = predict(model, ds, device, a.batch_size, a.workers)
     fa = a.fa_target if a.fa_target is not None else tcfg.fa_target_per_hour
-    rows = metrics.sweep(events, noise, mcfg.stride, mcfg.sample_rate)
+    rule = metrics.TriggerRule.from_config(tcfg, mcfg)
+    rows = metrics.sweep(events, noise, mcfg.stride, mcfg.sample_rate, rule=rule)
     s = metrics.summary(rows, fa)
     hours = sum((~n["missing_tokens"]).sum() for n in noise) * mcfg.token_seconds / 3600
 
@@ -150,7 +156,7 @@ def main(argv=None):
     print_summary(f"{a.run_dir} on {name}", s, len(events), hours)
     geo_rows = metrics.geometry_table(events, mcfg.stride, mcfg.sample_rate)
     print_geometry(geo_rows)
-    table = per_trace(events, ds, mcfg.stride, mcfg.sample_rate, s["threshold"])
+    table = per_trace(events, ds, mcfg.stride, mcfg.sample_rate, s["threshold"], rule=rule)
     if len(table):
         table["mag_bin"] = pd.cut(table.magnitude, [-9, 2, 3, 4, 5, 10],
                                   labels=["<2", "2-3", "3-4", "4-5", "≥5"])

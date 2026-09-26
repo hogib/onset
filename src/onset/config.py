@@ -85,6 +85,14 @@ class DataConfig:
     early_weight: float = 2.0
     pre_s: float = 2.0                   # ... and so are the two seconds before it
     pre_weight: float = 2.0
+    # A second event added into the first one's coda (data.py, `_second`): p
+    # stays 1 through it and dt restarts at its P, so the dt head sees what a
+    # new onset inside a coda looks like, as in an aftershock sequence.
+    second_p: float = 0.3                # training: share of event crops that get one
+    second_min_s: float = 6.0            # its P at least this long after the first P ...
+    second_max_s: float = 25.0           # ... and at most this long
+    second_snr_max: float = 10.0         # its first 2 s: 1x to this many times the RMS before it
+    eval_second_every: int = 4           # evaluation: every Nth event trace gets one; 0 none
 
 
 @dataclass
@@ -100,6 +108,14 @@ class TrainConfig:
     noise_fraction: float = 0.5          # of each batch, drawn from noise traces
     fallback_weight: float = 0.0         # share of event draws from --fallback sources
     fa_target_per_hour: float = 1.0      # operating point used for model selection
+    # The deployed trigger (ayzek src/pipeline/trigger.hpp), used by validation
+    # and evaluate: rising edges, plus a dt restart while p stays at or above
+    # the threshold, with a minimum time between the P dates of two triggers.
+    dt_reset: int = 1
+    dt_reset_below: float = 2.0
+    dt_reset_from: float = 5.0
+    dt_reset_tokens: int = 2
+    min_trigger_gap_s: float = 15.0
     num_workers: int = 6
     seed: int = 42
 

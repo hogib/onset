@@ -185,7 +185,8 @@ def main(argv=None):
         probs, dts, refreshes, geo = replay_station(model, dcfg, wave, missing,
                                                a.block_seconds, a.quiet)
         t = metrics.token_times(len(probs), s, fs)
-        edges = metrics.rising_edges(probs, thr, release)
+        edges = metrics.trigger_tokens(probs, dts, thr, release, s, fs,
+                                       metrics.TriggerRule.from_config(tcfg, mcfg))
         name = f"{net}.{sta}"
         np.savez_compressed(out / f"{name}.npz", t=t, p=probs, dt=dts,
                             start=str(t_start), refreshes=np.asarray(refreshes),

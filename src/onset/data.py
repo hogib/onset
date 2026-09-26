@@ -34,6 +34,18 @@ about the label.
 **Evaluation** takes whole traces with a fixed `eval_lead_in_s` spliced in
 front, longer than the model's lookback, so validation, too, measures the
 detector with no view of where the data begins.
+
+**A second event in the coda** (`_second`). Every trace holds one event, so
+without help the model never sees an onset inside another event's coda, and
+it learns to read an aftershock there as more coda: on the Marmara M6.2
+sequence the v2 model's dt did not restart for 116 of 296 arrivals. So
+`second_p` of the training event crops get a second event trace added
+`second_min_s`-`second_max_s` after the first P, from the same station where
+it has one, scaled so its first 2 s are 1-`second_snr_max` times the RMS
+just before it, and faded in over half a second a second ahead of its P. p
+stays 1 through it and dt restarts at its P (`labels.token_targets`).
+Evaluation gives every `eval_second_every`-th event trace one, at a fixed
+draw, so validation measures the restart that ayzek's trigger fires on.
 """
 from __future__ import annotations
 
@@ -62,6 +74,11 @@ class OnsetDataset(Dataset):
         # split-disjoint, so these never cross a split.
         pool = idx[idx.kind.isin(("noise", "context"))]
         self.pool = {k: g["key"].tolist() for k, g in pool.groupby(["network", "station"])}
+        # Second-event sources: the split's event traces, by station.
+        ev = idx[(idx.split == split) & (idx.kind == "event") & idx.p_sample.notna()]
+        self.events = ev.reset_index(drop=True)
+        self.events_by_station = {k: g.index.tolist()
+                                  for k, g in self.events.groupby(["network", "station"])}
         self.data, self.model, self.train = data, model, train
         self.fs = model.sample_rate
         self.stride = model.stride
@@ -147,6 +164,51 @@ class OnsetDataset(Dataset):
         shift = len(lead) - xf - trim
         return w, m, None if p is None else p + shift
 
+    def _second(self, r, wave, missing, p, rng):
+        """Adds a second event trace into the coda after `p`, in place.
+
+        Returns (its P sample, its P tolerance in samples), or (None, 0) when
+        there is no room for one or no source trace.
+        """
+        fs, d = self.fs, self.data
+        lo = p + d.second_min_s * fs
+        hi = min(p + d.second_max_s * fs, len(wave) - 2 * fs)
+        if hi <= lo or not len(self.events):
+            return None, 0.0
+        same = [j for j in self.events_by_station.get((r.network, r.station), [])
+                if self.events.key[j] != r.key]
+        j = (same[int(rng.integers(0, len(same)))] if same
+             else int(rng.integers(0, len(self.events))))
+        r2 = self.events.iloc[j]
+        if r2.key == r.key:
+            return None, 0.0
+        w2, m2 = self.store.read(r2.key)
+        p_src = int(r2.p_sample)
+        lead, fade = int(1.0 * fs), int(0.5 * fs)
+        if p_src < lead or p_src + 2 * fs > len(w2):
+            return None, 0.0
+        p2 = int(rng.uniform(lo, hi))
+        n = min(len(w2) - (p_src - lead), len(wave) - (p2 - lead))
+        seg = w2[p_src - lead: p_src - lead + n].astype(np.float32)
+        seg_m = m2[p_src - lead: p_src - lead + n]
+        ramp = np.ones(n, np.float32)
+        ramp[:fade] = np.sin(np.linspace(0.0, np.pi / 2, fade, dtype=np.float32)) ** 2
+        if n < len(wave) - (p2 - lead):                               # it ends early: fade out
+            ramp[-fade:] = np.minimum(ramp[-fade:], ramp[:fade][::-1])
+        before = wave[p2 - 2 * int(fs): p2][~missing[p2 - 2 * int(fs): p2]]
+        first = seg[lead: lead + 2 * int(fs)][~seg_m[lead: lead + 2 * int(fs)]]
+        if not len(before) or not len(first):
+            return None, 0.0
+        a, b = np.sqrt(np.mean(before ** 2)), np.sqrt(np.mean(first ** 2))
+        if not (a > 0 and b > 0):
+            return None, 0.0
+        snr = np.exp(rng.uniform(0.0, np.log(d.second_snr_max)))
+        s = p2 - lead
+        wave[s: s + n] += (snr * a / b) * seg * ramp[:, None]
+        missing[s: s + n] |= seg_m
+        tol = float(r2.p_tolerance_s) if pd.notna(r2.p_tolerance_s) else 0.0
+        return float(p2), tol * fs
+
     def _s_local(self, r, p, p_local):
         """The predicted S in crop-local seconds: S keeps its offset from P
         through splices and crops."""
@@ -186,13 +248,23 @@ class OnsetDataset(Dataset):
             if got is not None:
                 wave, missing, p = got
         a, b = self._crop(len(wave), p)
-        wave, missing = wave[a:b], missing[a:b].copy()
+        wave, missing = wave[a:b].copy(), missing[a:b].copy()
         p_local = None if p is None else p - a
+        p2, tol2 = None, 0.0
+        if p_local is not None:
+            if self.train and self.rng.random() < self.data.second_p:
+                p2, tol2 = self._second(r, wave, missing, p_local, self.rng)
+            elif (not self.train and self.data.eval_second_every
+                  and i % self.data.eval_second_every == self.data.eval_second_every - 1):
+                p2, tol2 = self._second(r, wave, missing, p_local,
+                                        np.random.default_rng(10_000_019 + i))
 
         if self.train and ctx is not None and self.rng.random() < self.data.ctx_drop:
             ctx = None
         if self.train and self.rng.random() < self.data.gap_aug_p:
             protect = None if p_local is None else (int(p_local - self.fs), int(p_local + self.fs))
+            if p2 is not None and self.rng.random() < 0.5:
+                protect = (int(p2 - self.fs), int(p2 + self.fs))
             self._gap(missing, protect)
 
         if ctx is not None:
@@ -210,7 +282,13 @@ class OnsetDataset(Dataset):
         t = token_targets(len(x) // self.stride, self.stride, p_local, tol * self.fs,
                           self.fs, self.model.max_dt_s,
                           self.data.early_s * self.fs, self.data.early_weight,
-                          self.data.pre_s * self.fs, self.data.pre_weight)
+                          self.data.pre_s * self.fs, self.data.pre_weight,
+                          p2, tol2)
+        # Geometry is the first event's; after the second P it is not.
+        t["geo_mask"] = t["dt_mask"].copy()
+        if p2 is not None:
+            ends = np.arange(len(t["y"])) * self.stride + self.stride - 1
+            t["geo_mask"][ends >= p2 - tol2] = 0.0
         return {"x": torch.from_numpy(x), "ctx": torch.from_numpy(c),
                 "has_ctx": torch.tensor(has),
                 **{k: torch.from_numpy(v) for k, v in t.items()},
@@ -225,6 +303,8 @@ class OnsetDataset(Dataset):
                                         if p is not None and pd.notna(r.get("back_azimuth_deg"))
                                         else np.nan),
                 "s_s": torch.tensor(self._s_local(r, p, p_local)),
+                "p2_s": torch.tensor(np.nan if p2 is None else p2 / self.fs),
+                "tol2_s": torch.tensor(tol2 / self.fs),
                 "n_tokens": torch.tensor(len(x) // self.stride)}
 
 
@@ -240,7 +320,7 @@ def pad_collate(items):
         vals = [it[k] for it in items]
         if k == "x":
             n = L
-        elif k in ("y", "w", "dt", "dt_mask"):
+        elif k in ("y", "w", "dt", "dt_mask", "geo_mask"):
             n = L // stride
         else:
             out[k] = torch.stack(vals)          # scalars, and the fixed-length context

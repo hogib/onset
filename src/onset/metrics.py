@@ -15,8 +15,17 @@ stride - 1) / fs`: the earliest moment a real-time system could know the
 token's output. A crossing earlier than `P - tolerance` on an event trace
 is a false trigger on that trace (`early`), and it does not count as a
 detection. The trace can still detect afterwards, once it has re-armed.
+
+**The trigger is ayzek's** (`TriggerRule`, `trigger_tokens`): a rising edge,
+or, while p stays at or above the threshold, a restart of dt after it had
+grown, which is how an onset inside another event's coda is caught; and no
+trigger whose P date is within `min_gap_s` of the last one's. Validation
+traces that carry a second onset (`data._second`) are scored on it too, and
+model selection counts both onsets.
 """
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -48,39 +57,124 @@ def token_times(n_tokens: int, stride: int, fs: float) -> np.ndarray:
     return (np.arange(n_tokens) * stride + stride - 1) / fs
 
 
-def score_event(p, dt, p_s, tol_s, stride, fs, thr, release):
-    """(latency s or nan, early trigger bool, onset error s or nan)."""
+@dataclass
+class TriggerRule:
+    """ayzek's transformer trigger (src/pipeline/trigger.hpp and the
+    processor's minimum time between triggers)."""
+    dt_reset: bool = True
+    below: float = 2.0          # dt at or below this is a restart ...
+    frm: float = 5.0            # ... once dt had reached this since the last trigger
+    tokens: int = 2             # ... for this many tokens in a row
+    min_gap_s: float = 15.0     # between the P dates (t - dt) of two triggers
+    max_dt: float = 10.0
+
+    @classmethod
+    def from_config(cls, tcfg, mcfg) -> "TriggerRule":
+        return cls(bool(tcfg.dt_reset), tcfg.dt_reset_below, tcfg.dt_reset_from,
+                   int(tcfg.dt_reset_tokens), tcfg.min_trigger_gap_s, mcfg.max_dt_s)
+
+
+def trigger_tokens(p: np.ndarray, dt: np.ndarray, thr: float, release: float,
+                   stride: int, fs: float, rule: TriggerRule | None = None) -> np.ndarray:
+    """Token indices where the trigger fires. Without `rule`, rising edges
+    only (`rising_edges`).
+
+    With it, the stream is cut into runs of p >= release (the trigger re-arms
+    between them). In a run the first token at or above `thr` is the rising
+    edge; after each trigger at token L, a later token j fires on a restart
+    when p[j] >= thr, dt[j] <= below and max(dt[L:j]) >= frm held for
+    `tokens` tokens in a row (any token below `thr` breaks the row). Candidates
+    closer than `min_gap_s` in P date to the last accepted trigger are
+    dropped, as ayzek does, but still restart the dt bookkeeping."""
+    if rule is None:
+        return rising_edges(p, thr, release)
+    active = p >= release
+    if not active.any():
+        return np.zeros(0, int)
+    d = np.diff(np.concatenate([[0], active.astype(np.int8), [0]]))
+    starts, ends = np.flatnonzero(d == 1), np.flatnonzero(d == -1)
+    cand = []
+    for a, b in zip(starts, ends):
+        hi = np.flatnonzero(p[a:b] >= thr)
+        if not len(hi):
+            continue
+        L = a + int(hi[0])
+        cand.append(L)
+        if not rule.dt_reset:
+            continue
+        while L + 1 < b:
+            seg = slice(L + 1, b)
+            peak = np.maximum.accumulate(dt[L:b - 1])          # max(dt[L:j]) for j in seg
+            ok = (p[seg] >= thr) & (dt[seg] <= rule.below) & (peak >= rule.frm)
+            if rule.tokens > 1:
+                run = np.convolve(ok.astype(np.int32), np.ones(rule.tokens, np.int32))[:len(ok)]
+                ok = run >= rule.tokens
+            j = np.flatnonzero(ok)
+            if not len(j):
+                break
+            L = L + 1 + int(j[0])
+            cand.append(L)
+    cand = np.asarray(cand, int)
+    if rule.min_gap_s <= 0 or len(cand) < 2:
+        return cand
     t = token_times(len(p), stride, fs)
-    edges = rising_edges(p, thr, release)
-    early = bool(len(edges) and t[edges[0]] < p_s - tol_s)
+    dates = t[cand] - np.minimum(dt[cand], rule.max_dt)
+    keep, last = [], -np.inf
+    for k, date in zip(cand, dates):
+        if date - last >= rule.min_gap_s:
+            keep.append(k)
+            last = date
+    return np.asarray(keep, int)
+
+
+def first_after(edges, t, p_s, tol_s, dt=None):
+    """(latency s or nan, onset error s or nan) of the first trigger at or
+    after `p_s - tol_s`."""
     hits = edges[t[edges] >= p_s - tol_s] if len(edges) else edges
     if not len(hits):
-        return np.nan, early, np.nan
+        return np.nan, np.nan
     j = hits[0]
-    return t[j] - p_s, early, (t[j] - dt[j]) - p_s
+    return t[j] - p_s, (np.nan if dt is None else (t[j] - dt[j]) - p_s)
+
+
+def score_event(p, dt, p_s, tol_s, stride, fs, thr, release, rule=None):
+    """(latency s or nan, early trigger bool, onset error s or nan)."""
+    t = token_times(len(p), stride, fs)
+    edges = trigger_tokens(p, dt, thr, release, stride, fs, rule)
+    early = bool(len(edges) and t[edges[0]] < p_s - tol_s)
+    lat, onset = first_after(edges, t, p_s, tol_s, dt)
+    return lat, early, onset
 
 
 def sweep(events: list[dict], noise: list[dict], stride: int, fs: float,
-          thresholds=THRESHOLDS, release_ratio: float = 0.5) -> list[dict]:
+          thresholds=THRESHOLDS, release_ratio: float = 0.5,
+          rule: TriggerRule | None = None) -> list[dict]:
     """One row per threshold.
 
     Args:
-        events: dicts with `p`, `dt` (per-token arrays), `p_s`, `tol_s`.
-        noise: dicts with `p`, and `missing_tokens` (bool per token) so gap
-            time is not counted as monitored time.
+        events: dicts with `p`, `dt` (per-token arrays), `p_s`, `tol_s`, and
+            optionally `p2_s`, `tol2_s` for a second onset in the coda.
+        noise: dicts with `p`, `dt`, and `missing_tokens` (bool per token) so
+            gap time is not counted as monitored time.
+        rule: the trigger (`TriggerRule`); None for rising edges only.
     """
     noise_hours = sum((~n["missing_tokens"]).sum() for n in noise) * stride / fs / 3600
     rows = []
     for thr in thresholds:
         release = thr * release_ratio
-        lat, early, onset = [], [], []
+        lat, early, onset, lat2 = [], [], [], []
         for e in events:
-            l, er, o = score_event(e["p"], e["dt"], e["p_s"], e["tol_s"], stride, fs, thr, release)
+            t = token_times(len(e["p"]), stride, fs)
+            edges = trigger_tokens(e["p"], e["dt"], thr, release, stride, fs, rule)
+            early.append(bool(len(edges) and t[edges[0]] < e["p_s"] - e["tol_s"]))
+            l, o = first_after(edges, t, e["p_s"], e["tol_s"], e["dt"])
             lat.append(l)
-            early.append(er)
             onset.append(o)
-        lat = np.asarray(lat)
-        fa = sum(len(rising_edges(n["p"], thr, release)) for n in noise)
+            if np.isfinite(e.get("p2_s", np.nan)):
+                lat2.append(first_after(edges, t, e["p2_s"], e.get("tol2_s", 0.0))[0])
+        lat, lat2 = np.asarray(lat), np.asarray(lat2)
+        fa = sum(len(trigger_tokens(n["p"], n.get("dt", np.zeros_like(n["p"])), thr, release,
+                                    stride, fs, rule)) for n in noise)
         row = {"threshold": float(thr),
                "false_per_hour": fa / noise_hours if noise_hours else np.nan,
                "early_rate": float(np.mean(early)) if events else np.nan,
@@ -90,6 +184,10 @@ def sweep(events: list[dict], noise: list[dict], stride: int, fs: float,
                if np.isfinite(onset).any() else np.nan}
         for d in DELAYS_S:
             row[f"recall@{d}s"] = float(np.mean(lat <= d)) if events else np.nan
+            row[f"second_recall@{d}s"] = float(np.mean(lat2 <= d)) if len(lat2) else np.nan
+        row["second_n"] = len(lat2)
+        both = np.concatenate([lat, lat2])
+        row["onset_recall@1.0s"] = float(np.mean(both <= 1.0)) if len(both) else np.nan
         rows.append(row)
     return rows
 
@@ -105,7 +203,7 @@ def operating_point(rows: list[dict], fa_target_per_hour: float) -> dict:
 def summary(rows: list[dict], fa_target_per_hour: float) -> dict:
     op = operating_point(rows, fa_target_per_hour)
     return {"fa_target_per_hour": fa_target_per_hour, **op,
-            "score": op["recall@1.0s"]}
+            "score": op.get("onset_recall@1.0s", op["recall@1.0s"])}
 
 
 # --- geometry ---------------------------------------------------------------
@@ -136,6 +234,8 @@ def geometry_table(events: list[dict], stride: int, fs: float) -> list[dict]:
             t = token_times(len(e["p"]), stride, fs)
             since = t - e["p_s"]
             m = (since >= lo) & (since < hi) & ~e["missing_tokens"]
+            if np.isfinite(e.get("p2_s", np.nan)):          # the targets are the first event's
+                m &= t < e["p2_s"] - e.get("tol2_s", 0.0)
             if phase is not None:
                 if not np.isfinite(e.get("s_s", np.nan)):
                     continue
