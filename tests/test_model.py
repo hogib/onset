@@ -118,3 +118,24 @@ def test_gapped_context_stays_finite(model):
     ctx[:, :3] = 0
     ctx[:, 3] = 1
     assert torch.isfinite(run(model, signal(400), ctx)[0]).all()
+
+
+def test_streaming_geometry_matches_the_forward_pass():
+    """The geometry head streams exactly too: ayzek locates from these outputs."""
+    from onset.locate import estimates_from_head
+    torch.manual_seed(0)
+    m = OnsetDetector(ModelConfig(**SMALL, geometry=1)).eval()
+    x = signal(400)
+    with torch.no_grad():
+        out = m(x[None])
+    s = StreamingDetector(m)
+    got = []
+    for chunk in torch.split(x, 23):
+        got += s.push(chunk, geometry=True)
+    assert len(got) == out["log_dist"].shape[1]
+    for t in (0, 17, len(got) - 1):
+        ref = estimates_from_head(out, token=t)
+        for k, v in ref.items():
+            assert got[t][2][k] == pytest.approx(v, rel=1e-4, abs=1e-5), (t, k)
+    with pytest.raises(ValueError):
+        StreamingDetector(OnsetDetector(ModelConfig(**SMALL))).push(x, geometry=True)

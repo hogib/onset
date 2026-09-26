@@ -26,7 +26,9 @@ with TauP, refined with AIC, and matched to triggers:
   the catalogue misses small events.
 
 Writes `<out>/<NET.STA>.npz` (per-token time, p, dt), `<NET.STA>_triggers.csv`,
-and `summary.json`.
+and `summary.json`. A model with the geometry head adds per-token `dist_km`,
+`log_dist_sd`, `baz_deg` and `kappa` to the npz, and those values at each
+trigger and 10 s after it to the triggers CSV.
 """
 from __future__ import annotations
 
@@ -47,6 +49,9 @@ from onset.dsp import filter_components
 from onset.evaluate import load_model
 from onset.labels import refine_p
 from onset.stream import block_overlap_tokens
+
+
+GEO_AFTER_S = 10.0                 # second geometry reading after each trigger
 
 
 class ScaleSchedule:
@@ -75,7 +80,9 @@ def replay_station(model, dcfg, wave, missing, block_s=60.0, quiet=0.3):
     """Scores one station's continuous (T, 3) filtered recording.
 
     Returns:
-        (probabilities, dt, context refresh sample indices)
+        (probabilities, dt, context refresh sample indices, geometry), the
+        last a dict of per-token `dist_km`, `log_dist_sd`, `baz_deg` and
+        `kappa` for a model with the geometry head, else None.
     """
     cfg = model.cfg
     s, fs = cfg.stride, cfg.sample_rate
@@ -90,6 +97,8 @@ def replay_station(model, dcfg, wave, missing, block_s=60.0, quiet=0.3):
     refreshes = []
     probs = np.zeros(n_tok, np.float32)
     dts = np.zeros(n_tok, np.float32)
+    geo = ({k: np.full(n_tok, np.nan, np.float32)
+            for k in ("dist_km", "log_dist_sd", "baz_deg", "kappa")} if cfg.geometry else None)
     for t0 in range(0, n_tok, block):
         t1 = min(t0 + block, n_tok)
         a = max(0, t0 - lead)
@@ -98,6 +107,13 @@ def replay_station(model, dcfg, wave, missing, block_s=60.0, quiet=0.3):
             out = model(x, c, has)
         probs[t0:t1] = torch.sigmoid(out["logit"][0, t0 - a:].float()).cpu().numpy()
         dts[t0:t1] = out["dt"][0, t0 - a:].float().cpu().numpy()
+        if geo is not None:
+            g = {k: v[0, t0 - a:].float().cpu() for k, v in out.items() if k != "logit"}
+            geo["dist_km"][t0:t1] = g["log_dist"].exp().numpy()
+            geo["log_dist_sd"][t0:t1] = (0.5 * g["log_dist_var"]).exp().numpy()
+            geo["baz_deg"][t0:t1] = np.degrees(torch.atan2(g["baz_vec"][:, 0],
+                                                           g["baz_vec"][:, 1]).numpy()) % 360
+            geo["kappa"][t0:t1] = g["baz_log_kappa"].exp().numpy()
 
         end = t1 * s
         ctx_tok = ctx_len // s
@@ -109,7 +125,7 @@ def replay_station(model, dcfg, wave, missing, block_s=60.0, quiet=0.3):
             c = torch.as_tensor(ctx, device=dev)[None]
             has = torch.tensor([True], device=dev)
             refreshes.append(end)
-    return probs, dts, refreshes
+    return probs, dts, refreshes, geo
 
 
 def match(arrivals, trig_t, tol, detect_window=10.0, coda=60.0):
@@ -166,15 +182,24 @@ def main(argv=None):
         for i, c in enumerate(comps):
             raw[:, i], miss3[:, i] = to_grid(c, t_start, n)
         wave, missing = filter_components(raw, miss3)
-        probs, dts, refreshes = replay_station(model, dcfg, wave, missing,
+        probs, dts, refreshes, geo = replay_station(model, dcfg, wave, missing,
                                                a.block_seconds, a.quiet)
         t = metrics.token_times(len(probs), s, fs)
         edges = metrics.rising_edges(probs, thr, release)
         name = f"{net}.{sta}"
         np.savez_compressed(out / f"{name}.npz", t=t, p=probs, dt=dts,
-                            start=str(t_start), refreshes=np.asarray(refreshes))
+                            start=str(t_start), refreshes=np.asarray(refreshes),
+                            **(geo or {}))
         trig = pd.DataFrame({"time_s": t[edges], "utc": [str(t_start + x) for x in t[edges]],
                              "p": probs[edges], "onset_s": t[edges] - dts[edges]})
+        if geo is not None:
+            # Where the event is as seen from here, at the trigger and GEO_AFTER_S
+            # later (ayzek relocates as these sharpen).
+            for tag, k in [("", edges),
+                           (f"_{GEO_AFTER_S:g}s", np.minimum(edges + int(GEO_AFTER_S * fs / s),
+                                                              len(probs) - 1))]:
+                for g, v in geo.items():
+                    trig[f"{g}{tag}"] = v[k]
         hours = (~missing).sum() / fs / 3600
         res = {"hours": hours, "missing_fraction": float(missing.mean()),
                "triggers": len(edges), "context_refreshes": len(refreshes)}

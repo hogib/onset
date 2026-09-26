@@ -100,6 +100,9 @@ uv run onset train --data datasets/fdsn_v1 --out runs/fdsn_v2
       --lead-in-p 0.9 --ctx-drop 0.3 --fa-target-per-hour 0.5 --epochs 30
   ```
 - **Adding STEAD:** `--fallback datasets/stead_v1 --fallback-weight 0.2`.
+- **Geometry head (location):** `--geometry 1`, with `--geo-weight` for its
+  share of the loss (default 0.1). `evaluate` then prints distance and
+  back-azimuth error by time since P, and ayzek locates from it (§8).
 - **Quick smoke run:** `--epochs 2 --steps-per-epoch 50`.
 
 A run directory holds:
@@ -236,6 +239,13 @@ meson test -C build-release test_transformer                 # C++ vs PyTorch on
   threshold.
 - `data/fixtures/transformer.ayzw`: reference outputs for the test.
 
+**A run trained with `--geometry 1`** exports its geometry head too, and the
+fixtures include its outputs, which `test_transformer` compares at every
+token. The export then prints the head's distance and back-azimuth on DEMI
+next to the true ones for the Sındırgı M4.9. `meson test -C build-release
+test_locate` checks ayzek's locator against the scenarios of
+`tests/test_locate.py`.
+
 **Exports overwrite each other.** To keep several models side by side, copy
 the `.ayzw` somewhere else and point ayzek at it with `--transformer FILE`.
 
@@ -260,6 +270,8 @@ build-release/app/ayzek --speed 0 --detector transformer --catalog tests/catalog
 | `--detector transformer` | the streaming transformer, one output per 0.1 s |
 | `--detector stalta` | the classical STA/LTA reference |
 | `--transformer FILE` | transformer weights (default `models/transformer.ayzw`) |
+| `--locate geometry` | locate from the geometry head, no picker (the default when the model has the head) |
+| `--locate picks` | locate from P and S picks (the default otherwise) |
 | `--threshold P`, `--release P` | transformer: default to the model's operating point and half of it |
 | `--scores DIR` | per-station CSV of every window's (6 s) or token's (transformer) probability |
 | `--record FILE` | every detection, pick and magnitude, for offline analysis |
