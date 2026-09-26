@@ -174,6 +174,16 @@ counts ─ causal Butterworth 1–45 Hz, 4th order, restarts after gaps ─ ÷ �
   S wave. Validation missed it because its traces also started at origin. On
   the splice-aware validation below, that model catches 4.2% of events within
   1 s instead of the 86% it reported.
+- **A second event in the coda.** Every stored trace holds one event, so
+  the model never saw an onset inside another event's coda and learned to
+  read one as more coda: on the Marmara M6.2 sequence the v2 model's dt did
+  not restart for 116 of 296 catalogued arrivals, and ayzek's trigger could
+  not fire on them. `second_p` (0.3) of training event crops now get a second
+  event trace added 6–25 s after the first P, from the same station where
+  there is one, at 1–10× the RMS just before it (log-uniform), faded in over
+  half a second. p stays 1 through it; dt restarts at its P and is not
+  trained within its label tolerance; the geometry head is trained only
+  before it, since its targets are the first event's (`data._second`).
 - **Sampling.** Half of each batch is noise traces and half event traces,
   whatever the group sizes. `--fallback` stores (STEAD) take
   `fallback_weight` of the event half.
@@ -198,10 +208,20 @@ numbers describe a continuous stream rather than a trace that starts at
 origin. Traces whose station has no noise, or whose P is too early to splice,
 stay as they are.
 
+**The trigger is ayzek's.** Latency and false triggers are counted with the
+trigger ayzek runs (`metrics.TriggerRule`, from `TrainConfig.dt_reset*` and
+`min_trigger_gap_s`): a rising edge, or a restart of dt while p stays high,
+and no trigger whose P date is within 15 s of the last one. Every 4th
+validation event (`eval_second_every`) carries a second event in its coda at
+a fixed draw, scored on its own ("second onsets"). With `--dt-reset 0
+--eval-second-every 0 --min-trigger-gap-s 0`, validation is what it was
+before.
+
 Both are swept over the threshold. The **operating point** is the lowest
 threshold that keeps noise within `fa_target_per_hour` (default 1 per station
 per hour). **Model selection** takes the checkpoint with the best recall within
-1 s of P at that operating point.
+1 s at that operating point, over first and second onsets together, so a
+checkpoint is chosen for catching aftershocks as well as isolated events.
 
 `onset replay` is the test that matters most. It runs a trained model over a
 continuous recording, with the station context refreshed online from quiet

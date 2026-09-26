@@ -198,14 +198,19 @@ moment both ways. The flawed v1 fired 2–14 s later with the 24 h in front
 
 **Training log line:**
 ```
-epoch 5  loss 0.1141 (bce 0.1045 dt 0.096)  val recall@1s 0.462 @thr 0.99000 (0.71 FA/h)  lat p50 1.00s
+epoch 5  loss 0.1141 (bce 0.1045 dt 0.096)  val recall@1s 0.462 @thr 0.99000 (0.71 FA/h)  lat p50 1.00s  second@2s 0.310  score 0.432
 ```
 - `bce`: the loss for "is an event under way". 0.69 is a coin flip; it should
   fall.
 - `dt`: the error of "seconds since onset", in seconds. It should fall.
 - `val recall@1s`: the share of validation events caught within 1 s of P, at
-  the threshold that keeps validation noise under the false-trigger budget. It
-  decides `best.pt`.
+  the threshold that keeps validation noise under the false-trigger budget.
+- `second@2s`: the share of second onsets (an event added into another's coda,
+  every 4th validation event) caught within 2 s. This is what the dt restart
+  in ayzek's trigger depends on.
+- `score`: recall within 1 s over first and second onsets together. It decides
+  `best.pt`. Triggers are counted with ayzek's rule (rising edge or dt
+  restart, 15 s apart between P dates).
 - `@thr … (FA/h)`: that threshold, and its false triggers per hour. The
   threshold is not a confidence: training is balanced, so what matters is only
   where it lands on real noise.
