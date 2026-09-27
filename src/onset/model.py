@@ -18,6 +18,8 @@ See docs/DESIGN.md for why each piece is here.
 """
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -260,7 +262,8 @@ class OnsetDetector(nn.Module):
         """
         with torch.autocast(h.device.type, enabled=False):
             g = self.geo_head(self.ln_out(h.float()))
-        return {"log_dist": g[..., 0], "log_dist_var": g[..., 1].clamp(-8.0, 6.0),
+        min_lv = 2.0 * math.log(self.cfg.geo_min_sd)
+        return {"log_dist": g[..., 0], "log_dist_var": g[..., 1].clamp(min_lv, 6.0),
                 "baz_vec": g[..., 2:4], "baz_log_kappa": g[..., 4].clamp(-4.0, 8.0)}
 
     def forward(self, x, ctx=None, has_ctx=None):

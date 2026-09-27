@@ -200,8 +200,53 @@ def operating_point(rows: list[dict], fa_target_per_hour: float) -> dict:
     return min(ok, key=lambda r: r["threshold"]) if ok else max(rows, key=lambda r: r["threshold"])
 
 
-def summary(rows: list[dict], fa_target_per_hour: float) -> dict:
-    op = operating_point(rows, fa_target_per_hour)
+def false_per_hour(noise: list[dict], thr: float, release: float, stride: int, fs: float,
+                   rule: TriggerRule | None = None) -> float:
+    hours = sum((~n["missing_tokens"]).sum() for n in noise) * stride / fs / 3600
+    fa = sum(len(trigger_tokens(n["p"], n.get("dt", np.zeros_like(n["p"])), thr, release,
+                                stride, fs, rule)) for n in noise)
+    return fa / hours if hours else np.nan
+
+
+def exact_operating_point(rows: list[dict], events: list[dict], noise: list[dict],
+                          stride: int, fs: float, fa_target_per_hour: float,
+                          rule: TriggerRule | None = None, release_ratio: float = 0.5,
+                          iters: int = 14) -> dict:
+    """The lowest threshold within the false-trigger budget, found by
+    bisection between the grid's last threshold over budget and its first
+    within it, instead of the grid point itself.
+
+    A trained model's outputs crowd against 1, where one grid step moves
+    recall by tens of points: on the wide KO set, recall within 1 s swung
+    between 0.28 and 0.66 from epoch to epoch as the operating point jumped
+    between neighbouring grid thresholds. The bisection runs in logit, on the
+    noise alone (the false-trigger rate falls as the threshold rises), and
+    the events are scored once, at the threshold it settles on.
+    """
+    grid = operating_point(rows, fa_target_per_hour)
+    over = [r for r in rows if r["threshold"] < grid["threshold"]
+            and not r["false_per_hour"] <= fa_target_per_hour]
+    if not over or not noise or not grid["false_per_hour"] <= fa_target_per_hour:
+        return grid
+    lo = np.log(max(over, key=lambda r: r["threshold"])["threshold"])
+    lo = float(lo - np.log1p(-np.exp(lo)))                       # logit
+    t = grid["threshold"]
+    hi = float(np.log(t) - np.log1p(-t))
+    for _ in range(iters):
+        mid = 0.5 * (lo + hi)
+        thr = 1.0 / (1.0 + np.exp(-mid))
+        if false_per_hour(noise, thr, thr * release_ratio, stride, fs, rule) <= fa_target_per_hour:
+            hi = mid
+        else:
+            lo = mid
+    thr = 1.0 / (1.0 + np.exp(-hi))
+    return sweep(events, noise, stride, fs, [thr], release_ratio, rule)[0]
+
+
+def summary(rows: list[dict], fa_target_per_hour: float, op: dict | None = None) -> dict:
+    """The operating point's row plus the model-selection score; `op` is the
+    exact operating point when one was computed, else the grid's."""
+    op = op if op is not None else operating_point(rows, fa_target_per_hour)
     return {"fa_target_per_hour": fa_target_per_hour, **op,
             "score": op.get("onset_recall@1.0s", op["recall@1.0s"])}
 

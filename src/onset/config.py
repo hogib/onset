@@ -38,6 +38,11 @@ class ModelConfig:
     # 1 adds the geometry head: epicentral distance and back-azimuth, each
     # with its own uncertainty, for every token after P (model.py).
     geometry: int = 0
+    # Smallest standard deviation of log distance the geometry head may state:
+    # 0.1 is about 10% in distance. Without a floor the head keeps shrinking
+    # its uncertainty on the training set (the loss goes negative) while its
+    # validation error stays put. ayzek reads it from the export.
+    geo_min_sd: float = 0.1
 
     @property
     def stride(self) -> int:

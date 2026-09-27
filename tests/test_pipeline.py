@@ -483,3 +483,27 @@ def test_training_warns_about_little_validation_noise(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "val 1 traces (0.2 h)" in out
     assert "one false trigger is 6.00/h" in out
+
+
+def test_exact_operating_point_lands_between_grid_steps():
+    """Noise peaks spread between two grid thresholds: the exact point meets
+    the budget with a threshold the grid does not have."""
+    rng = np.random.default_rng(8)
+    stride, n = 10, 36000                                   # 1 h per trace
+    noise = []
+    for _ in range(10):
+        p = np.zeros(n)
+        peaks = 0.9820 + 0.0035 * rng.random(3)             # between two grid steps
+        for k, v in zip(rng.choice(np.arange(100, n - 100, 400), 3, replace=False), peaks):
+            p[k] = v
+        noise.append({"p": p, "dt": np.zeros(n), "missing_tokens": np.zeros(n, bool)})
+    ev_p = np.zeros(600)
+    ev_p[100:] = 0.984
+    events = [{"p": ev_p, "dt": np.zeros(600), "p_s": 10.0, "tol_s": 0.3}]
+    rows = metrics.sweep(events, noise, stride, FS)
+    grid = metrics.operating_point(rows, 1.0)
+    exact = metrics.exact_operating_point(rows, events, noise, stride, FS, 1.0)
+    assert exact["false_per_hour"] <= 1.0 < rows[[r["threshold"] for r in rows].index(
+        max(r["threshold"] for r in rows if r["threshold"] < grid["threshold"]))]["false_per_hour"]
+    assert exact["threshold"] < grid["threshold"]
+    assert exact["recall@1.0s"] == 1.0 and grid["recall@1.0s"] == 0.0

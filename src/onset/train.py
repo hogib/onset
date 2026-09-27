@@ -91,6 +91,19 @@ def check_noise(root, tcfg, fs: float = 100.0):
               f"{1 / hours['val']:.2f}/h against a budget of {tcfg.fa_target_per_hour}/h, "
               "so the operating point and model selection will be noisy")
     ev = idx[(idx.kind == "event") & (idx.split == "train")]
+    # Station context is what tells the model what this station normally looks
+    # like, and sets the input scale; without it every trace uses the learned
+    # null context and the scale of its own first second.
+    contexts = set(idx.loc[idx.kind == "context", "key"])
+    with_ctx = ev.context_key.isin(contexts).mean() if len(ev) else 1.0
+    print(f"  context: {len(contexts)} traces; {with_ctx:.0%} of training event traces have one")
+    if with_ctx < 0.5:
+        report = Path(root) / "build.json"
+        short = (json.loads(report.read_text()).get("dropped", {}).get("context_short", 0)
+                 if report.exists() else 0)
+        print(f"  warning: most event traces have no station context"
+              + (f"; build.json dropped {short} as context_short: --context-seconds is "
+                 "longer than the pulled window (290 for 5 min pulls)" if short else ""))
     have = set(map(tuple, idx.loc[idx.kind.isin(("noise", "context")),
                                   ["network", "station"]].drop_duplicates().to_numpy()))
     covered = (np.mean([(n, s) in have for n, s in zip(ev.network, ev.station)])
@@ -248,7 +261,8 @@ def main(argv=None):
 
         events, noise = predict(model, val_ds, device, workers=tcfg.num_workers)
         rows = metrics.sweep(events, noise, mcfg.stride, mcfg.sample_rate, rule=rule)
-        s = metrics.summary(rows, tcfg.fa_target_per_hour)
+        s = metrics.summary(rows, tcfg.fa_target_per_hour, metrics.exact_operating_point(
+            rows, events, noise, mcfg.stride, mcfg.sample_rate, tcfg.fa_target_per_hour, rule))
         loss_avg = sums / max(1, n)
         geo = metrics.geometry_table(events, mcfg.stride, mcfg.sample_rate) if mcfg.geometry else []
         rec = {"epoch": epoch + 1, "step": step, "loss": loss_avg[0], "bce": loss_avg[1],

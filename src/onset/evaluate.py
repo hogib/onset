@@ -149,7 +149,8 @@ def main(argv=None):
     fa = a.fa_target if a.fa_target is not None else tcfg.fa_target_per_hour
     rule = metrics.TriggerRule.from_config(tcfg, mcfg)
     rows = metrics.sweep(events, noise, mcfg.stride, mcfg.sample_rate, rule=rule)
-    s = metrics.summary(rows, fa)
+    s = metrics.summary(rows, fa, metrics.exact_operating_point(
+        rows, events, noise, mcfg.stride, mcfg.sample_rate, fa, rule))
     hours = sum((~n["missing_tokens"]).sum() for n in noise) * mcfg.token_seconds / 3600
 
     name = f"{Path(a.data).name}_{a.split}" + ("_noctx" if a.no_context else "")

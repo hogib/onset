@@ -149,7 +149,10 @@ uv run onset train --data datasets/fdsn_v1 --out runs/fdsn_v2
   ```
 - **Adding STEAD:** `--fallback datasets/stead_v1 --fallback-weight 0.2`.
 - **Geometry head (location):** `--geometry 1`, with `--geo-weight` for its
-  share of the loss (default 0.1). `evaluate` then prints distance and
+  share of the loss (default 0.1) and `--geo-min-sd` for the smallest
+  distance uncertainty it may state (default 0.1, about 10%; without a floor
+  it keeps shrinking its uncertainty on training data and turns
+  overconfident). `evaluate` then prints distance and
   back-azimuth error by time since P, and ayzek locates from it (§8).
 - **Quick smoke run:** `--epochs 2 --steps-per-epoch 50`.
 
@@ -262,7 +265,10 @@ epoch 5  loss 0.1141 (bce 0.1045 dt 0.096)  val recall@1s 0.462 @thr 0.99000 (0.
 - `score`: recall within 1 s over first and second onsets together. It decides
   `best.pt`. Triggers are counted with ayzek's rule (rising edge or dt
   restart, 15 s apart between P dates).
-- `@thr … (FA/h)`: that threshold, and its false triggers per hour. The
+- `@thr … (FA/h)`: that threshold, and its false triggers per hour. It is
+  the lowest threshold within the budget, found by bisection between grid
+  steps: outputs crowd against 1, where one grid step moves recall by tens of
+  points. The
   threshold is not a confidence: training is balanced, so what matters is only
   where it lands on real noise.
 

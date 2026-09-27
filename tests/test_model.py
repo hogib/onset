@@ -139,3 +139,12 @@ def test_streaming_geometry_matches_the_forward_pass():
             assert got[t][2][k] == pytest.approx(v, rel=1e-4, abs=1e-5), (t, k)
     with pytest.raises(ValueError):
         StreamingDetector(OnsetDetector(ModelConfig(**SMALL))).push(x, geometry=True)
+
+
+def test_geometry_uncertainty_has_a_floor():
+    torch.manual_seed(0)
+    m = OnsetDetector(ModelConfig(**SMALL, geometry=1, geo_min_sd=0.1)).eval()
+    with torch.no_grad():
+        m.geo_head.bias[1] = -50.0                # the head trying to state sd ~ 0
+        out = m(signal(200)[None])
+    assert torch.allclose(out["log_dist_var"].min(), torch.tensor(2 * np.log(0.1), dtype=torch.float32), atol=1e-5)
