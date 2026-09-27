@@ -446,3 +446,40 @@ def test_noise_in_a_coda_is_contaminated(tmp_path):
     # A distant small event is not visible, coda or not.
     o2 = cat.event(2).origin
     assert cat.ringing(lat, lon, o2, o2 + 300, taup) == []
+
+
+def test_training_stops_without_noise(tmp_path):
+    """A store with events and no noise cannot train or validate a detector."""
+    from onset.config import TrainConfig
+    from onset.train import check_noise
+    rng = np.random.default_rng(6)
+    w = StoreWriter(tmp_path)
+    for split in ("train", "val"):
+        sta = next(s for s in (f"S{i}" for i in range(200)) if station_split("XX", s) == split)
+        w.add(f"event/1/XX.{sta}", rng.normal(0, 1, (6000, 3)).astype(np.float32),
+              np.zeros(6000, bool),
+              {"split": split, "source": "fdsn", "network": "XX", "station": sta,
+               "kind": "event", "p_sample": 700.0, "p_source": "aic", "p_tolerance_s": 0.3})
+    w.close({"dropped": {"noise_absent": 2, "context_absent": 2}})
+    with pytest.raises(SystemExit, match="no training noise.*no validation noise"):
+        check_noise(tmp_path, TrainConfig())
+
+
+def test_training_warns_about_little_validation_noise(tmp_path, capsys):
+    from onset.config import TrainConfig
+    from onset.train import check_noise
+    rng = np.random.default_rng(7)
+    w = StoreWriter(tmp_path)
+    for split, n in (("train", 60000), ("val", 60000)):          # 10 min each
+        sta = next(s for s in (f"S{i}" for i in range(200)) if station_split("XX", s) == split)
+        base = {"split": split, "source": "fdsn", "network": "XX", "station": sta}
+        w.add(f"noise/1/XX.{sta}", rng.normal(0, 1, (n, 3)).astype(np.float32),
+              np.zeros(n, bool), {**base, "kind": "noise"})
+        w.add(f"event/1/XX.{sta}", rng.normal(0, 1, (6000, 3)).astype(np.float32),
+              np.zeros(6000, bool), {**base, "kind": "event", "p_sample": 700.0,
+                                     "p_source": "aic", "p_tolerance_s": 0.3})
+    w.close()
+    check_noise(tmp_path, TrainConfig())
+    out = capsys.readouterr().out
+    assert "val 1 traces (0.2 h)" in out
+    assert "one false trigger is 6.00/h" in out

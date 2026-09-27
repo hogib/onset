@@ -130,6 +130,13 @@ STEAD only reads chunks whose `.csv` and `.hdf5` are both extracted. Use
 uv run onset train --data datasets/fdsn_v1 --out runs/fdsn_v2
 ```
 
+- **Before the first epoch** it prints the noise traces and hours per split.
+  It stops if there is no training or validation noise (the model would learn
+  that everything is an event, and the operating point would be undefined),
+  and warns when validation noise is under 5 h (one false trigger then moves
+  the operating point) or when under 80% of event traces have noise from
+  their own station (no lead-in splice or context for the rest). Fix those in
+  the build (§2), not in training.
 - **Time:** about 40 epochs × 1–2 min on the 3060 Ti.
 - **Log:** one line per epoch. See §6 for how to read it.
 - **Flags:** every field of `ModelConfig`, `DataConfig` and `TrainConfig` in

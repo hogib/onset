@@ -26,6 +26,7 @@ from dataclasses import asdict, fields
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 from torch.utils.data import ConcatDataset, DataLoader, WeightedRandomSampler
@@ -47,6 +48,56 @@ def worker_init(worker_id):
     info = torch.utils.data.get_worker_info()
     for ds in getattr(info.dataset, "datasets", [info.dataset]):
         ds.reseed(info.seed % 2**32)
+
+
+def check_noise(root, tcfg, fs: float = 100.0):
+    """Stops before training on a store that cannot train or validate a
+    detector, and warns about one that validates poorly.
+
+    Without training noise the model only ever sees events and learns to fire
+    on everything; without validation noise the false-trigger rate, and so
+    the operating point and model selection, is undefined. With little
+    validation noise one false trigger moves the operating point: the first
+    wide build had 1.3 h, where one trigger is 0.76 per hour. And an event
+    trace whose station has no noise gets neither a lead-in splice nor a
+    station context, which brings back the "data just began" cue.
+    """
+    idx = pd.read_csv(Path(root) / "index.csv", low_memory=False)
+    noise = idx[idx.kind == "noise"]
+    hours = {s: noise.loc[noise.split == s, "n_samples"].sum() / fs / 3600
+             for s in ("train", "val", "test")}
+    counts = {s: int((noise.split == s).sum()) for s in ("train", "val", "test")}
+    print(f"  noise: " + ", ".join(f"{s} {counts[s]} traces ({hours[s]:.1f} h)"
+                                    for s in counts))
+    problems = []
+    if tcfg.noise_fraction > 0 and not counts["train"]:
+        problems.append("no training noise: the model would learn that everything is an event")
+    if not counts["val"]:
+        problems.append("no validation noise: false triggers per hour, the operating point "
+                        "and model selection are undefined")
+    if problems:
+        report = Path(root) / "build.json"
+        dropped = {}
+        if report.exists():
+            dropped = {k: v for k, v in json.loads(report.read_text()).get("dropped", {}).items()
+                       if k.startswith(("noise", "context"))}
+        raise SystemExit(
+            f"{root}: " + "; ".join(problems) + ".\n"
+            f"  build.json drops for noise and context: {dropped or 'none recorded'}\n"
+            "  See docs/MANUAL.md section 2: --context-dir and --noise-dir must point at the "
+            "noise pulled with the events, and --noise-seconds must fit the pulled window.")
+    if hours["val"] < 5.0:
+        print(f"  warning: {hours['val']:.1f} h of validation noise; one false trigger is "
+              f"{1 / hours['val']:.2f}/h against a budget of {tcfg.fa_target_per_hour}/h, "
+              "so the operating point and model selection will be noisy")
+    ev = idx[(idx.kind == "event") & (idx.split == "train")]
+    have = set(map(tuple, idx.loc[idx.kind.isin(("noise", "context")),
+                                  ["network", "station"]].drop_duplicates().to_numpy()))
+    covered = (np.mean([(n, s) in have for n, s in zip(ev.network, ev.station)])
+               if len(ev) else 1.0)
+    if covered < 0.8:
+        print(f"  warning: only {covered:.0%} of training event traces have noise from their own "
+              "station, for the lead-in splice and station context; the rest start at origin")
 
 
 def training_set(primary, fallback, dcfg, mcfg, tcfg):
@@ -159,6 +210,7 @@ def main(argv=None):
           f"window {mcfg.window_tokens * mcfg.token_seconds:.0f} s/layer | "
           f"lookback {mcfg.lookback_tokens * mcfg.token_seconds:.1f} s")
 
+    check_noise(a.data, tcfg, mcfg.sample_rate)
     train_ds, weights = training_set(a.data, a.fallback, dcfg, mcfg, tcfg)
     sampler = WeightedRandomSampler(weights, tcfg.steps_per_epoch * tcfg.batch_size,
                                     replacement=True)
