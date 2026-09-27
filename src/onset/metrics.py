@@ -30,6 +30,7 @@ from dataclasses import dataclass
 import numpy as np
 
 DELAYS_S = (0.25, 0.5, 1.0, 2.0, 4.0)
+SECOND_DT_WINDOW_S = 3.0      # second onsets: the lowest dt in this long after their P
 # Even steps in logit, not probability. Without label smoothing a trained
 # model's outputs crowd against 1, and a grid in probability steps from 0.990
 # to 0.995 in one move -- measured, recall within 1 s fell from 46% to 0.3%
@@ -162,7 +163,7 @@ def sweep(events: list[dict], noise: list[dict], stride: int, fs: float,
     rows = []
     for thr in thresholds:
         release = thr * release_ratio
-        lat, early, onset, lat2 = [], [], [], []
+        lat, early, onset, lat2, dtmin2 = [], [], [], [], []
         for e in events:
             t = token_times(len(e["p"]), stride, fs)
             edges = trigger_tokens(e["p"], e["dt"], thr, release, stride, fs, rule)
@@ -172,6 +173,9 @@ def sweep(events: list[dict], noise: list[dict], stride: int, fs: float,
             onset.append(o)
             if np.isfinite(e.get("p2_s", np.nan)):
                 lat2.append(first_after(edges, t, e["p2_s"], e.get("tol2_s", 0.0))[0])
+                w2 = (t >= e["p2_s"]) & (t <= e["p2_s"] + SECOND_DT_WINDOW_S)
+                if w2.any():
+                    dtmin2.append(float(np.min(e["dt"][w2])))
         lat, lat2 = np.asarray(lat), np.asarray(lat2)
         fa = sum(len(trigger_tokens(n["p"], n.get("dt", np.zeros_like(n["p"])), thr, release,
                                     stride, fs, rule)) for n in noise)
@@ -186,6 +190,8 @@ def sweep(events: list[dict], noise: list[dict], stride: int, fs: float,
             row[f"recall@{d}s"] = float(np.mean(lat <= d)) if events else np.nan
             row[f"second_recall@{d}s"] = float(np.mean(lat2 <= d)) if len(lat2) else np.nan
         row["second_n"] = len(lat2)
+        # How far dt comes down at a second onset: the trigger needs 2 s.
+        row["second_dt_min_p50"] = float(np.median(dtmin2)) if dtmin2 else np.nan
         both = np.concatenate([lat, lat2])
         row["onset_recall@1.0s"] = float(np.mean(both <= 1.0)) if len(both) else np.nan
         rows.append(row)

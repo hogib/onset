@@ -25,26 +25,31 @@ def token_targets(n_tokens: int, stride: int, p_sample: float | None,
                   early_samples: float = 0, early_weight: float = 1.0,
                   pre_samples: float = 0, pre_weight: float = 1.0,
                   second_sample: float | None = None,
-                  second_tolerance_samples: float = 0) -> dict:
+                  second_tolerance_samples: float = 0,
+                  second_dt_samples: float = 0, second_dt_weight: float = 1.0) -> dict:
     """Targets for one trace.
 
     `second_sample` is the P of a second event inside the first one's coda
     (data.py, `_second`): `y` stays 1 through it, and `dt` restarts there,
     since that is how the trigger tells a new onset from the old coda. Tokens
-    within `second_tolerance_samples` of it get no dt target.
+    within `second_tolerance_samples` of it get no dt target, and the dt loss
+    of the `second_dt_samples` after it is weighted `second_dt_weight`: the
+    restart is what the trigger fires on, and it is a few tokens against a
+    coda of many.
 
     Returns:
         dict of (n_tokens,) float32 arrays: `y` (0/1), `w` (loss weight),
-        `dt` (seconds since the latest P, clipped) and `dt_mask` (1 where `dt`
-        is trained).
+        `dt` (seconds since the latest P, clipped), `dt_mask` (1 where `dt`
+        is trained) and `dt_w` (the dt loss weight where it is).
     """
     ends = np.arange(n_tokens) * stride + stride - 1
     y = np.zeros(n_tokens, np.float32)
     w = np.ones(n_tokens, np.float32)
     dt = np.zeros(n_tokens, np.float32)
     dt_mask = np.zeros(n_tokens, np.float32)
+    dt_w = np.ones(n_tokens, np.float32)
     if p_sample is None or not np.isfinite(p_sample):
-        return {"y": y, "w": w, "dt": dt, "dt_mask": dt_mask}
+        return {"y": y, "w": w, "dt": dt, "dt_mask": dt_mask, "dt_w": dt_w}
 
     rel = ends - p_sample
     after = rel >= 0
@@ -60,7 +65,8 @@ def token_targets(n_tokens: int, stride: int, p_sample: float | None,
         after2 = rel2 >= 0
         dt[after2] = np.minimum(rel2[after2] / sample_rate, max_dt_s)
         dt_mask[np.abs(rel2) < second_tolerance_samples] = 0.0
-    return {"y": y, "w": w, "dt": dt, "dt_mask": dt_mask}
+        dt_w[after2 & (rel2 < second_tolerance_samples + second_dt_samples)] = second_dt_weight
+    return {"y": y, "w": w, "dt": dt, "dt_mask": dt_mask, "dt_w": dt_w}
 
 
 def aic_onset(x: np.ndarray) -> int:

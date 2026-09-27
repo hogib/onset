@@ -93,10 +93,16 @@ class DataConfig:
     # A second event added into the first one's coda (data.py, `_second`): p
     # stays 1 through it and dt restarts at its P, so the dt head sees what a
     # new onset inside a coda looks like, as in an aftershock sequence.
-    second_p: float = 0.3                # training: share of event crops that get one
+    # In ayzek the restart must bring dt down to 2 s. On the Sindirgi M6.1
+    # sequence dt fell ~7 s at most missed aftershocks, but only to 2-3 s, so the
+    # restart is up-weighted in the dt loss, and most second events arrive once
+    # dt has reached its cap, as they do in a sequence.
+    second_p: float = 0.5                # training: share of event crops that get one
     second_min_s: float = 6.0            # its P at least this long after the first P ...
-    second_max_s: float = 25.0           # ... and at most this long
+    second_max_s: float = 30.0           # ... and at most this long
     second_snr_max: float = 10.0         # its first 2 s: 1x to this many times the RMS before it
+    second_dt_s: float = 3.0             # dt loss up-weighted over this long after its P ...
+    second_dt_weight: float = 5.0        # ... by this factor
     eval_second_every: int = 4           # evaluation: every Nth event trace gets one; 0 none
 
 

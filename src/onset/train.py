@@ -167,7 +167,7 @@ def loss_fn(out, b, dt_weight, geo_weight=0.0):
     w = b["w"]
     bce = F.binary_cross_entropy_with_logits(out["logit"].float(), b["y"], weight=w,
                                              reduction="sum") / w.sum().clamp_min(1)
-    m = b["dt_mask"]
+    m = b["dt_mask"] * b["dt_w"] if "dt_w" in b else b["dt_mask"]
     dt = (F.smooth_l1_loss(out["dt"].float(), b["dt"], reduction="none") * m).sum() \
         / m.sum().clamp_min(1)
     loss = bce + dt_weight * dt
@@ -273,7 +273,8 @@ def main(argv=None):
               f"dt {loss_avg[2]:.3f})  val recall@1s {s['recall@1.0s']:.3f} "
               f"@thr {s['threshold']:.5f} ({s['false_per_hour']:.2f} FA/h)  "
               f"lat p50 {s['latency_p50_s']:.2f}s"
-              + (f"  second@2s {s['second_recall@2.0s']:.3f}  score {s['score']:.3f}"
+              + (f"  second@2s {s['second_recall@2.0s']:.3f} "
+                 f"(dt min {s.get('second_dt_min_p50', float('nan')):.1f}s)  score {s['score']:.3f}"
                  if s.get("second_n") else "")
               + f"  {time.time() - t0:.0f}s"
               + "".join(f"  | {g['window'].split(' after')[0]}: {g['dist_abs_err_km_p50']:.1f} km"

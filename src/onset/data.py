@@ -43,7 +43,8 @@ sequence the v2 model's dt did not restart for 116 of 296 arrivals. So
 `second_min_s`-`second_max_s` after the first P, from the same station where
 it has one, scaled so its first 2 s are 1-`second_snr_max` times the RMS
 just before it, and faded in over half a second a second ahead of its P. p
-stays 1 through it and dt restarts at its P (`labels.token_targets`).
+stays 1 through it and dt restarts at its P (`labels.token_targets`), with
+the dt loss of the `second_dt_s` after it weighted `second_dt_weight`.
 Evaluation gives every `eval_second_every`-th event trace one, at a fixed
 draw, so validation measures the restart that ayzek's trigger fires on.
 """
@@ -283,7 +284,8 @@ class OnsetDataset(Dataset):
                           self.fs, self.model.max_dt_s,
                           self.data.early_s * self.fs, self.data.early_weight,
                           self.data.pre_s * self.fs, self.data.pre_weight,
-                          p2, tol2)
+                          p2, tol2, self.data.second_dt_s * self.fs,
+                          self.data.second_dt_weight)
         # Geometry is the first event's; after the second P it is not.
         t["geo_mask"] = t["dt_mask"].copy()
         if p2 is not None:
@@ -320,7 +322,7 @@ def pad_collate(items):
         vals = [it[k] for it in items]
         if k == "x":
             n = L
-        elif k in ("y", "w", "dt", "dt_mask", "geo_mask"):
+        elif k in ("y", "w", "dt", "dt_mask", "dt_w", "geo_mask"):
             n = L // stride
         else:
             out[k] = torch.stack(vals)          # scalars, and the fixed-length context

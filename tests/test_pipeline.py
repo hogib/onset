@@ -282,6 +282,16 @@ def test_second_onset_restarts_dt_and_keeps_y():
     assert (t["dt_mask"][np.abs(ends - 605) < 15] == 0).all()
 
 
+def test_second_onset_restart_is_upweighted():
+    t = token_targets(100, 10, p_sample=205, tolerance_samples=0, sample_rate=FS, max_dt_s=10,
+                      second_sample=605, second_tolerance_samples=15,
+                      second_dt_samples=300, second_dt_weight=5.0)
+    ends = np.arange(100) * 10 + 9
+    assert (t["dt_w"][(ends >= 605) & (ends < 605 + 15 + 300)] == 5.0).all()
+    assert (t["dt_w"][ends < 605] == 1.0).all()
+    assert (t["dt_w"][ends >= 605 + 15 + 300] == 1.0).all()
+
+
 def token_trigger_reference(p, dt, thr, rel, below, frm, ntok):
     """Token by token, as ayzek's src/pipeline/trigger.hpp."""
     out, armed, peak, low = [], True, 0.0, 0

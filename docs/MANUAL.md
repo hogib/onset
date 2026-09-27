@@ -276,7 +276,7 @@ moment both ways. The flawed v1 fired 2–14 s later with the 24 h in front
 
 **Training log line:**
 ```
-epoch 5  loss 0.1141 (bce 0.1045 dt 0.096)  val recall@1s 0.462 @thr 0.99000 (0.71 FA/h)  lat p50 1.00s  second@2s 0.310  score 0.432
+epoch 5  loss 0.1141 (bce 0.1045 dt 0.096)  val recall@1s 0.462 @thr 0.99000 (0.71 FA/h)  lat p50 1.00s  second@2s 0.310 (dt min 2.6s)  score 0.432
 ```
 - `bce`: the loss for "is an event under way". 0.69 is a coin flip; it should
   fall.
@@ -286,6 +286,9 @@ epoch 5  loss 0.1141 (bce 0.1045 dt 0.096)  val recall@1s 0.462 @thr 0.99000 (0.
 - `second@2s`: the share of second onsets (an event added into another's coda,
   every 4th validation event) caught within 2 s. This is what the dt restart
   in ayzek's trigger depends on.
+- `dt min`: the median of the lowest dt within 3 s of each second onset's P.
+  ayzek's restart fires only once dt is at 2 s or less, so this should fall
+  below 2; near 2–3 the model sees the new onset but the trigger misses it.
 - `score`: recall within 1 s over first and second onsets together. It decides
   `best.pt`. Triggers are counted with ayzek's rule (rising edge or dt
   restart, 15 s apart between P dates).
@@ -307,7 +310,8 @@ epoch 5  loss 0.1141 (bce 0.1045 dt 0.096)  val recall@1s 0.462 @thr 0.99000 (0.
   triggering. This is what places the picker's window.
 - `second onsets in the coda`: recall on the validation or test events that
   carry a second event in their coda (every 4th), and over both onsets. This
-  is what catches aftershocks in ayzek.
+  is what catches aftershocks in ayzek. The line under it gives the median
+  lowest dt near their P (ayzek's restart needs 2 s or less).
 - `where is it (geometry head)`: distance and back-azimuth error by time since
   P, and `within 1 sd`, the share inside the model's own uncertainty (0.68 when
   it is honest).

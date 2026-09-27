@@ -181,12 +181,19 @@ counts ─ causal Butterworth 1–45 Hz, 4th order, restarts after gaps ─ ÷ �
   the model never saw an onset inside another event's coda and learned to
   read one as more coda: on the Marmara M6.2 sequence the v2 model's dt did
   not restart for 116 of 296 catalogued arrivals, and ayzek's trigger could
-  not fire on them. `second_p` (0.3) of training event crops now get a second
-  event trace added 6–25 s after the first P, from the same station where
+  not fire on them. `second_p` (0.5) of training event crops now get a second
+  event trace added 6–30 s after the first P, from the same station where
   there is one, at 1–10× the RMS just before it (log-uniform), faded in over
   half a second. p stays 1 through it; dt restarts at its P and is not
   trained within its label tolerance; the geometry head is trained only
   before it, since its targets are the first event's (`data._second`).
+  The restart itself is a few tokens against a coda of many, and the first
+  models learned it only partly: on the Sındırgı M6.1 sequence dt fell about
+  7 s at most missed aftershocks, but only to 2–3 s, and ayzek's restart
+  needs 2 s. So the dt loss of the 3 s after the second P is weighted 5×
+  (`second_dt_s`, `second_dt_weight`), and the second P now lands after dt
+  has reached its 10 s cap in most crops, as in a sequence. Validation
+  reports the median lowest dt within 3 s of each second P.
 - **Sampling.** Half of each batch is noise traces and half event traces,
   whatever the group sizes. `--fallback` stores (STEAD) take
   `fallback_weight` of the event half.
