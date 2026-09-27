@@ -408,3 +408,41 @@ def test_evaluation_adds_second_onsets_to_every_nth_event(two_event_store):
                          ModelConfig(), False)
     k = ev[1]
     assert float(again[k]["p2_s"]) == float(ds[k]["p2_s"])        # a fixed draw
+
+
+# -- noise contamination -------------------------------------------------------
+
+def test_coda_duration_grows_with_magnitude():
+    from onset.catalog import coda_seconds
+    assert coda_seconds(2.0) == pytest.approx(27.2, abs=0.5)
+    assert coda_seconds(3.0) == pytest.approx(86.1, abs=0.5)
+    assert coda_seconds(5.0) == pytest.approx(860.9, abs=1.0)
+    assert coda_seconds(8.0) == 3600.0                      # capped
+    assert coda_seconds(8.0, cap=600.0) == 600.0
+
+
+def test_noise_in_a_coda_is_contaminated(tmp_path):
+    """A P just before the window is not in it, but its coda is."""
+    pytest.importorskip("obspy")
+    from onset.catalog import Catalog, TravelTimes
+    csv = tmp_path / "cat.csv"
+    csv.write_text("Date,Longitude,Latitude,Depth,Rms,Type,Magnitude,Location,EventID\n"
+                   "01/06/2025 12:00:00,28.00,39.20,10,0.1,ML,3.0,A,1\n"      # 22 km from the station
+                   "01/06/2025 12:30:00,31.50,39.20,10,0.1,ML,2.0,B,2\n",     # 300 km, M2: not visible
+                   encoding="utf-8")
+    cat, taup = Catalog(csv), TravelTimes()
+    lat, lon = 39.0, 28.0
+    origin = cat.event(1).origin
+    p = origin + taup.first(22.2, 10.0)
+    # A window starting 30 s after the P: no arrival inside, but in the M3's
+    # ~86 s coda.
+    assert cat.arrivals(lat, lon, p + 30, p + 150, taup) == []
+    assert [e for e, _ in cat.ringing(lat, lon, p + 30, p + 150, taup)] == [1]
+    assert cat.ringing(lat, lon, p + 30, p + 150, taup, coda_cap=0.0) == []
+    # Once the coda is over, the window is clean.
+    assert cat.ringing(lat, lon, p + 120, p + 240, taup) == []
+    # A P inside the window is caught either way.
+    assert [e for e, _ in cat.ringing(lat, lon, p - 10, p + 10, taup, coda_cap=0.0)] == [1]
+    # A distant small event is not visible, coda or not.
+    o2 = cat.event(2).origin
+    assert cat.ringing(lat, lon, o2, o2 + 300, taup) == []

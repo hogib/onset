@@ -51,21 +51,62 @@ uv run --extra build onset build-fdsn --out datasets/fdsn_v1 --workers 8     # ~
 - `--context-seconds`, `--noise-seconds`: default 120 each.
 - `--max-missing`: default 0.10.
 
-**A pull that starts before origin** (for example
-`EARTHQUAKE_BATCHES = [("window_m60_p120", -60, 120)]` with
-`SEARCH_RADIUS_DEG = 1.8`):
+**A pull that starts before origin, over a wider radius.** In the
+downloader (seismic_cli `src/download.py`):
+
+```python
+EARTHQUAKE_BATCHES = [("window_m60_p120", -60, 120)]
+NOISE_BATCHES = [("noise_pre_3h", -11400, -10800),   # 10 min each; the default is 5
+                 ("noise_pre_6h", -22200, -21600)]
+SEARCH_RADIUS_DEG = 1.8
+BASE_OUTPUT_DIR = Path("data_wide")        # a fresh tree: see below
+NOISE_CONTAMINATION_BUFFER_SEC = 0         # the builder checks contamination itself
+```
+
+Then build from the same tree, event and noise folders alike:
 
 ```bash
+R=$ONSET_FDSN_ROOT
 uv run --extra build onset build-fdsn --out datasets/fdsn_wide \
-    --events-dir $ONSET_FDSN_ROOT/raw/data/batched_waveforms/window_m60_p120 \
-    --event-start-offset -60 --event-seconds 180
+    --events-dir  $R/data_wide/batched_waveforms/window_m60_p120 \
+    --context-dir $R/data_wide/batched_noise_waveforms/noise_pre_3h \
+    --noise-dir   $R/data_wide/batched_noise_waveforms/noise_pre_6h \
+    --event-start-offset -60 --event-seconds 180 \
+    --context-seconds 590 --noise-seconds 590
 ```
+
+Three things decide whether the event traces get noise and context, which
+the lead-in splice, the station context and validation all need. The first
+wide build got it for 460 of 18,762 traces:
+
+- **The same tree.** `--context-dir` and `--noise-dir` default to the v1
+  pulls under `raw/data`. Left at that, only events and stations the v1 pull
+  also had find noise.
+- **A fresh output tree.** The downloader skips any file that exists. Noise
+  batch names do not change with the radius, so noise saved by a 0.5° run for
+  the same event keeps only its near stations, and every farther station is
+  `noise_absent`.
+- **The downloader's contamination buffer at 0.** It drops a noise window if
+  any catalogued event anywhere in Türkiye falls within the buffer, whatever
+  its distance: at the catalogue's rates that is half to nine tenths of all
+  windows (more in a sequence). The builder's own check is by distance and
+  magnitude, and also looks back for coda (below).
+
+`--context-seconds` and `--noise-seconds` cannot exceed the pulled window,
+less a few seconds: 290 for the default 5 min windows, 590 for 10 min ones. A
+longer window gives training crops more variety and validation more noise
+hours. `build.json` counts every trace dropped as `*_absent` or `*_short`.
 
 - `--event-start-offset` is where the files start relative to origin.
 - Every event trace gets distance, back-azimuth and component labels for the
   geometry head.
 - Traces whose event would not be visible at that distance are dropped
   (`catalog.VISIBILITY`).
+- A noise or context window is dropped if a visible catalogued event arrives
+  inside it, or arrived early enough that its coda is still ringing: about
+  25 s after an M2, 85 s after an M3, 270 s after an M4 and 860 s after an M5
+  (`catalog.coda_seconds`, capped by `--coda-max-s`, default 3600; 0 checks
+  inside the window only, as before).
 
 **Rebuilding:**
 - A rebuild is only needed if the *stored* data changes: filter, window

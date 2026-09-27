@@ -15,8 +15,9 @@ each station:
    (`labels.refine_p`), and drop the trace if another catalogued event
    arrives before its P.
 4. Context and noise: keep the last `--context-seconds` / `--noise-seconds`
-   (the rest warms up the filter), and drop them if any catalogued event
-   arrives inside.
+   (the rest warms up the filter), and drop them if a visible catalogued
+   event arrives inside, or arrived early enough before that its coda is
+   still ringing (`catalog.coda_seconds`, capped at `--coda-max-s`).
 
 Every drop is counted by reason in build.json.
 """
@@ -140,7 +141,8 @@ def _clean_tail(components, seconds, lat, lon, max_missing, drops, what):
         drops[f"{what}_gappy"] += 1
         return None
     t1 = float(t0.timestamp) + seconds
-    if _W["catalog"].arrivals(lat, lon, float(t0.timestamp), t1, _W["taup"]):
+    if _W["catalog"].ringing(lat, lon, float(t0.timestamp), t1, _W["taup"],
+                             _W["cfg"]["coda_max_s"]):
         drops[f"{what}_contaminated"] += 1
         return None
     return wave, missing, t0
@@ -269,6 +271,9 @@ def parse_args(argv=None):
     p.add_argument("--max-missing", type=float, default=0.10,
                    help="Largest missing fraction for an event or noise trace.")
     p.add_argument("--max-context-missing", type=float, default=0.05)
+    p.add_argument("--coda-max-s", type=float, default=3600.0,
+                   help="Longest coda a noise or context window is checked back "
+                        "for; 0 checks only for arrivals inside the window.")
     p.add_argument("--limit", type=int, default=None, help="First N event files only.")
     p.add_argument("--workers", type=int, default=8)
     return p.parse_args(argv)
@@ -281,7 +286,7 @@ def main(argv=None):
                                        "event_seconds", "event_start_offset",
                                        "context_seconds",
                                        "noise_seconds", "max_missing",
-                                       "max_context_missing")}
+                                       "max_context_missing", "coda_max_s")}
     writer = StoreWriter(a.out)
     drops, kinds = Counter(), Counter()
     t0 = time.time()

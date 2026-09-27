@@ -4,7 +4,8 @@ Besides labelling each event trace's P, the catalogue answers the question
 that keeps the training set honest: *did some other catalogued event arrive at
 this station inside this window?* An event trace whose window holds an earlier
 event's arrival before its own P has signal under a "noise" label. A noise
-window holding any arrival is not noise.
+window holding any arrival is not noise, and neither is one that falls in the
+coda of an event that arrived shortly before it (`Catalog.ringing`).
 """
 from __future__ import annotations
 
@@ -24,6 +25,16 @@ S_PHASES = ("s", "S", "Sn", "Sg")
 # that earthquakes are noise.
 VISIBILITY = ((50.0, 0.0), (150.0, 2.0), (400.0, 3.0), (1500.0, 4.5))
 MAX_TRAVEL_S = 200.0
+CODA_MAX_S = 3600.0
+
+
+def coda_seconds(magnitude: float, cap: float = CODA_MAX_S) -> float:
+    """How long an event's signal lasts after its P, from the duration
+    magnitude relation Md = 2 log10(tau) - 0.87 inverted: about 25 s at M2,
+    85 s at M3, 270 s at M4 and 860 s at M5, capped at `cap` (the relation
+    is for local events; a great earthquake's aftershocks are catalogued
+    events of their own)."""
+    return float(min(cap, 10.0 ** ((magnitude + 0.87) / 2.0)))
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -78,6 +89,7 @@ class Catalog:
         self.mag = df["Magnitude"].to_numpy(float)
         self.ids = df["EventID"].to_numpy()
         self.row = {int(e): i for i, e in enumerate(self.ids)}
+        self.max_mag = float(self.mag.max()) if len(self.mag) else 0.0
 
     def event(self, event_id: int) -> Event | None:
         i = self.row.get(int(event_id))
@@ -108,6 +120,36 @@ class Catalog:
             tt = taup.first(float(dist), float(self.depth[i]))
             if tt is not None and t0 <= self.t[i] + tt <= t1:
                 out.append((int(self.ids[i]), float(self.t[i] + tt)))
+        return sorted(out, key=lambda e: e[1])
+
+
+    def ringing(self, lat: float, lon: float, t0: float, t1: float, taup: TravelTimes,
+                coda_cap: float = CODA_MAX_S) -> list[tuple[int, float]]:
+        """Visible catalogued events whose signal overlaps [t0, t1] at (lat, lon):
+        their P arrives by t1 and their coda (`coda_seconds`) has not ended by
+        t0. With `coda_cap` 0 this is `arrivals`: a P inside the window only.
+
+        Returns:
+            [(event_id, P arrival time)], earliest first.
+        """
+        look = MAX_TRAVEL_S + (coda_seconds(self.max_mag, coda_cap) if coda_cap > 0 else 0.0)
+        a, b = np.searchsorted(self.t, [t0 - look, t1])
+        if a == b:
+            return []
+        idx = np.arange(a, b)
+        d = haversine_km(lat, lon, self.lat[idx], self.lon[idx])
+        seen = np.zeros(len(idx), bool)
+        for dmax, mmin in VISIBILITY:
+            seen |= (d <= dmax) & (self.mag[idx] >= mmin)
+        out = []
+        for i, dist in zip(idx[seen], d[seen]):
+            tt = taup.first(float(dist), float(self.depth[i]))
+            if tt is None:
+                continue
+            p = self.t[i] + tt
+            end = p + (coda_seconds(self.mag[i], coda_cap) if coda_cap > 0 else 0.0)
+            if p <= t1 and end >= t0:
+                out.append((int(self.ids[i]), float(p)))
         return sorted(out, key=lambda e: e[1])
 
 

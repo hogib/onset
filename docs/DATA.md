@@ -43,7 +43,10 @@ Per station:
      before it.
 5. **Contamination:** drop a trace if a *visible* catalogued event arrives
    before its P. A context or noise window is dropped if any visible arrival
-   falls inside it. "Visible" means within 50 km at any magnitude, 150 km at
+   falls inside it, or if one arrived before it recently enough that its coda
+   still overlaps: coda duration from Md = 2 log10(τ) − 0.87, about 25 s at
+   M2, 85 s at M3, 270 s at M4, 860 s at M5, capped at 1 h (`--coda-max-s`).
+   The v1 build had only the inside check; its numbers below are from that. "Visible" means within 50 km at any magnitude, 150 km at
    M2+, 400 km at M3+ or 1500 km at M4.5+ (`catalog.VISIBILITY`). The rule is
    generous on purpose: a lost clean window costs little, a kept contaminated
    one teaches the model that earthquakes are noise.
