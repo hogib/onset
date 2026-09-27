@@ -1,5 +1,6 @@
 """Labels, filtering, metrics and the dataset, on synthetic data."""
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 
@@ -525,3 +526,58 @@ def test_noise_audit_finds_triggers_seen_at_several_stations():
     # Sliding B by 100 s around its 290 s window breaks the pair.
     period = {(1, "A"): (0.0, 290.0), (1, "B"): (0.0, 290.0)}
     assert not coincidences(trig, shifts={(1, "B"): 100.0}, period=period).any()
+
+
+def _catalog(tmp_path, rows):
+    csv = tmp_path / "cat.csv"
+    csv.write_text("Date,Longitude,Latitude,Depth,Rms,Type,Magnitude,Location,EventID\n"
+                   + "".join(f"{d},{lon},{lat},10,0.1,ML,{m},X,{i}\n"
+                             for i, (d, lat, lon, m) in enumerate(rows, 1)), encoding="utf-8")
+    from onset.catalog import Catalog
+    return Catalog(csv)
+
+
+def test_catalogue_activity_and_aftermath(tmp_path):
+    cat = _catalog(tmp_path, [
+        ("27/10/2025 19:48:00", 39.20, 28.20, 6.1),     # a mainshock
+        ("28/10/2025 01:00:00", 39.21, 28.21, 2.0),
+        ("28/10/2025 02:00:00", 39.22, 28.19, 2.2),
+        ("28/10/2025 03:00:00", 39.19, 28.22, 1.8),
+        ("01/06/2026 12:00:00", 37.00, 36.00, 5.0),     # far away, later
+    ])
+    t = pd.Timestamp("2025-10-28 02:30", tz="UTC").timestamp()
+    assert cat.nearby_count(39.08, 28.98, t - 43200, t + 43200, 75.0) == 4
+    assert cat.nearby_count(40.60, 27.70, t - 43200, t + 43200, 75.0) == 0
+    # M6.1: 30 d x 10^(1.1/2) = 106 days of aftermath within 150 km.
+    assert cat.aftermath_of(39.08, 28.98, t, 150.0, 5.0, 30.0) == (1, 6.1)
+    later = pd.Timestamp("2026-03-01", tz="UTC").timestamp()           # 125 days on
+    assert cat.aftermath_of(39.08, 28.98, later, 150.0, 5.0, 30.0) is None
+    assert cat.aftermath_of(41.50, 28.98, t, 150.0, 5.0, 30.0) is None  # 250 km away
+
+
+def test_noise_rules_and_exclusions(tmp_path):
+    from onset import build_fdsn
+    from collections import Counter
+    audit = tmp_path / "audit.csv"
+    pd.DataFrame({"pull": [7, 7, 7, 9], "station": ["A", "B", "C", "D"],
+                  "key": ["noise/7/KO.A", "noise/7/KO.B", "noise/7/KO.C", "noise/9/KO.D"],
+                  "coincident": [True, True, True, False]}).to_csv(audit, index=False)
+    keys, pulls = build_fdsn.load_exclusions([audit])
+    assert keys == {"noise/7/KO.A", "noise/7/KO.B", "noise/7/KO.C"} and pulls == {7}
+    cat = _catalog(tmp_path, [("28/10/2025 01:00:00", 39.21, 28.21, 2.0),
+                              ("28/10/2025 02:00:00", 39.22, 28.19, 2.2),
+                              ("28/10/2025 03:00:00", 39.19, 28.22, 1.8),
+                              ("28/10/2025 04:00:00", 39.20, 28.20, 2.4)])
+    build_fdsn._W.update(catalog=cat, cfg={
+        "exclude_keys": keys, "exclude_pulls": pulls, "max_active_events": 3,
+        "active_radius_km": 75.0, "active_hours": 12.0, "aftermath_mag": 5.0,
+        "aftermath_radius_km": 150.0, "aftermath_days": 30.0})
+    t = pd.Timestamp("2025-10-28 02:30", tz="UTC").timestamp()
+    quiet = pd.Timestamp("2025-06-01", tz="UTC").timestamp()
+    drops = Counter()
+    ok = lambda ev, sta, lat, lon, t0: build_fdsn._noise_vouched(ev, "KO", sta, lat, lon, t0, 290, drops)
+    assert not ok(7, "Z", 40.6, 27.7, quiet)            # a whole pull with a 3-station event
+    assert ok(9, "D", 40.6, 27.7, quiet)                # pull 9 had no coincidence
+    assert not ok(1, "S", 39.08, 28.98, t)              # 4 events within 75 km in +-12 h
+    assert ok(1, "S", 40.60, 27.70, t)                  # the same time, far away
+    assert drops == Counter({"noise_excluded": 1, "noise_active": 1})

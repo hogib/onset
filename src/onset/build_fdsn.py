@@ -18,6 +18,14 @@ each station:
    (the rest warms up the filter), and drop them if a visible catalogued
    event arrives inside, or arrived early enough before that its coda is
    still ringing (`catalog.coda_seconds`, capped at `--coda-max-s`).
+5. Noise only (not context, which describes the station's own background,
+   busy or not): drop windows the catalogue cannot vouch for, because small
+   events it does not list are likely there. That is a busy time and place
+   (more than `--max-active-events` catalogued events within
+   `--active-radius-km` in the `--active-hours` around it), or the aftermath
+   of a large event (`catalog.aftermath_of`), and any window
+   `onset audit-noise` found in a multi-station coincidence
+   (`--exclude-noise`).
 
 Every drop is counted by reason in build.json.
 """
@@ -148,6 +156,43 @@ def _clean_tail(components, seconds, lat, lon, max_missing, drops, what):
     return wave, missing, t0
 
 
+def _noise_vouched(event_id, net, sta, lat, lon, t0, seconds, drops) -> bool:
+    """False, counting the reason, for a noise window that is likely to hold
+    events the catalogue does not list."""
+    cfg, cat = _W["cfg"], _W["catalog"]
+    key = f"noise/{event_id}/{net}.{sta}"
+    if key in cfg["exclude_keys"] or event_id in cfg["exclude_pulls"]:
+        drops["noise_excluded"] += 1
+        return False
+    if cfg["max_active_events"] >= 0 and cfg["active_hours"] > 0:
+        h = cfg["active_hours"] * 3600.0
+        if cat.nearby_count(lat, lon, t0 - h, t0 + seconds + h,
+                            cfg["active_radius_km"]) > cfg["max_active_events"]:
+            drops["noise_active"] += 1
+            return False
+    if cfg["aftermath_days"] > 0 and cat.aftermath_of(
+            lat, lon, t0, cfg["aftermath_radius_km"], cfg["aftermath_mag"],
+            cfg["aftermath_days"]):
+        drops["noise_aftermath"] += 1
+        return False
+    return True
+
+
+def load_exclusions(paths, min_stations: int = 3):
+    """From `onset audit-noise` CSVs: the noise windows in a multi-station
+    coincidence, and the pulls where one spans `min_stations` or more (a
+    clear event, likely below the trigger at the other stations too)."""
+    import pandas as pd
+    keys, pulls = set(), set()
+    for p in paths:
+        t = pd.read_csv(p)
+        t = t[t["coincident"].astype(bool)]
+        keys |= set(t["key"])
+        n = t.groupby("pull")["station"].nunique()
+        pulls |= {int(x) for x in n[n >= min_stations].index}
+    return keys, pulls
+
+
 def process_file(path: Path):
     """Returns (records, drops): records are (key, wave, missing, meta)."""
     cfg, cat, taup = _W["cfg"], _W["catalog"], _W["taup"]
@@ -234,6 +279,10 @@ def process_file(path: Path):
         if (net, sta) in side["noise"]:
             got = _clean_tail(side["noise"][(net, sta)], cfg["noise_seconds"],
                               lat, lon, cfg["max_missing"], drops, "noise")
+            if got is not None and not _noise_vouched(ev.event_id, net, sta, lat, lon,
+                                                      float(got[2].timestamp),
+                                                      cfg["noise_seconds"], drops):
+                got = None
             if got is not None:
                 records.append((f"noise/{ev.event_id}/{net}.{sta}", got[0], got[1],
                                 {**base, "kind": "noise", "start_time": str(got[2]),
@@ -271,6 +320,21 @@ def parse_args(argv=None):
     p.add_argument("--max-missing", type=float, default=0.10,
                    help="Largest missing fraction for an event or noise trace.")
     p.add_argument("--max-context-missing", type=float, default=0.05)
+    p.add_argument("--max-active-events", type=int, default=3,
+                   help="Drop a noise window when more catalogued events than this lie "
+                        "within --active-radius-km in the --active-hours around it; "
+                        "-1 turns the rule off.")
+    p.add_argument("--active-radius-km", type=float, default=75.0)
+    p.add_argument("--active-hours", type=float, default=12.0)
+    p.add_argument("--aftermath-mag", type=float, default=5.0,
+                   help="Drop noise windows in the aftermath of an event this large or "
+                        "larger within --aftermath-radius-km ...")
+    p.add_argument("--aftermath-radius-km", type=float, default=150.0)
+    p.add_argument("--aftermath-days", type=float, default=30.0,
+                   help="... for this many days at --aftermath-mag, x3.2 per magnitude "
+                        "unit above it; 0 turns the rule off.")
+    p.add_argument("--exclude-noise", nargs="*", default=[],
+                   help="onset audit-noise CSVs: their coincident noise windows are dropped.")
     p.add_argument("--coda-max-s", type=float, default=3600.0,
                    help="Longest coda a noise or context window is checked back "
                         "for; 0 checks only for arrivals inside the window.")
@@ -286,7 +350,14 @@ def main(argv=None):
                                        "event_seconds", "event_start_offset",
                                        "context_seconds",
                                        "noise_seconds", "max_missing",
-                                       "max_context_missing", "coda_max_s")}
+                                       "max_context_missing", "coda_max_s",
+                                       "max_active_events", "active_radius_km",
+                                       "active_hours", "aftermath_mag",
+                                       "aftermath_radius_km", "aftermath_days")}
+    cfg["exclude_keys"], cfg["exclude_pulls"] = load_exclusions(a.exclude_noise)
+    if a.exclude_noise:
+        print(f"  excluding {len(cfg['exclude_keys'])} noise windows and "
+              f"{len(cfg['exclude_pulls'])} whole pulls from {len(a.exclude_noise)} audit(s)")
     writer = StoreWriter(a.out)
     drops, kinds = Counter(), Counter()
     t0 = time.time()

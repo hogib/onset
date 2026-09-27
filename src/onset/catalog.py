@@ -153,6 +153,40 @@ class Catalog:
         return sorted(out, key=lambda e: e[1])
 
 
+    def nearby_count(self, lat: float, lon: float, t0: float, t1: float,
+                     radius_km: float) -> int:
+        """Catalogued events of any magnitude within `radius_km` whose origin
+        falls in [t0, t1]."""
+        a, b = np.searchsorted(self.t, [t0, t1])
+        if a == b:
+            return 0
+        return int((haversine_km(lat, lon, self.lat[a:b], self.lon[a:b]) <= radius_km).sum())
+
+    def aftermath_of(self, lat: float, lon: float, t: float, radius_km: float,
+                     min_mag: float, days: float) -> tuple[int, float] | None:
+        """The largest event of magnitude >= `min_mag` within `radius_km`
+        whose aftermath still covers `t`: it happened before `t`, within
+        `days` * 10^((M - min_mag) / 2) days (30 days at M5 grows to 95 at
+        M6 and 300 at M7). Returns (event_id, magnitude) or None.
+
+        Right after a large event a catalogue misses many small aftershocks,
+        whose signals overlap, so a window there cannot be checked against it.
+        """
+        longest = days * 10 ** ((self.max_mag - min_mag) / 2) * 86400.0
+        a, b = np.searchsorted(self.t, [t - longest, t])
+        idx = np.arange(a, b)
+        idx = idx[self.mag[idx] >= min_mag]
+        if not len(idx):
+            return None
+        reach = days * 10 ** ((self.mag[idx] - min_mag) / 2) * 86400.0
+        idx = idx[(t - self.t[idx] <= reach)
+                  & (haversine_km(lat, lon, self.lat[idx], self.lon[idx]) <= radius_km)]
+        if not len(idx):
+            return None
+        i = idx[np.argmax(self.mag[idx])]
+        return int(self.ids[i]), float(self.mag[i])
+
+
 def load_stations(path) -> dict:
     """{(network, station): (lat, lon)}, plus {station: (lat, lon)} where the
     code is unique across networks."""

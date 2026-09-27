@@ -108,6 +108,30 @@ hours. `build.json` counts every trace dropped as `*_absent` or `*_short`.
   (`catalog.coda_seconds`, capped by `--coda-max-s`, default 3600; 0 checks
   inside the window only, as before).
 
+**Noise the catalogue cannot vouch for.** The catalogue check only catches
+listed events, and a catalogue misses small ones: most of all right after a
+large event, and wherever a sequence is running. On the first wide build 27
+multi-station events sat in the validation noise, none catalogued, most in
+the hours and days after the 27 Oct 2025 Sındırgı M6.1; they set the
+operating threshold at 0.994 and made recall swing from epoch to epoch. So
+the builder also drops a *noise* window (not context) when:
+
+| rule | flags (default) | drop reason |
+|---|---|---|
+| more than N catalogued events within R km in the H hours around it | `--max-active-events 3 --active-radius-km 75 --active-hours 12` (-1: off) | `noise_active` |
+| it falls in the aftermath of an M ≥ 5 within 150 km: 30 days at M5, ×3.2 per magnitude unit | `--aftermath-mag 5 --aftermath-radius-km 150 --aftermath-days 30` (0: off) | `noise_aftermath` |
+| `onset audit-noise` found it in a multi-station coincidence, or its pull had one spanning 3+ stations | `--exclude-noise runs/x/audit_noise_*.csv` | `noise_excluded` |
+
+On that audit the first two rules alone would have removed 144 of 154
+validation false triggers and 30 of the 31 in multi-station coincidences.
+To catch the rest, audit a trained model on every split and rebuild with the
+results:
+
+```bash
+for s in train val test; do uv run onset audit-noise runs/x --data datasets/fdsn_wide --split $s; done
+uv run --extra build onset build-fdsn ... --exclude-noise runs/x/audit_noise_{train,val,test}.csv
+```
+
 **Rebuilding:**
 - A rebuild is only needed if the *stored* data changes: filter, window
   lengths, labels or contamination rules.
