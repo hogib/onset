@@ -3,7 +3,10 @@
 A detector for a continuous seismic stream. It fires as soon as possible after a
 P arrival, so the phase picker gets the right window as soon as possible. It is
 the first of three stages: detector, then a noise/P/S picker, then a
-magnitude regressor. Only the detector is built so far.
+magnitude regressor. Only the detector is built here; ayzek supplies the
+other two. With the geometry head (`ModelConfig.geometry`) the detector also
+says where the event is, which ayzek uses to locate events without the
+picker (§6).
 
 The deployment target is ayzek (C++23, hand-written inference, Raspberry Pi).
 Everything below is chosen so that the model can be transcribed there and
@@ -198,8 +201,9 @@ off against each other through the threshold:
   of a token's output is the time of its last sample, the earliest moment a
   real system could know it. A crossing earlier than `P − tolerance` is an
   *early* trigger. It is reported, and it does not count as a detection.
-- **False triggers per hour on noise**: rising edges with hysteresis (re-arm
-  below half the threshold), over the hours actually monitored, excluding gaps.
+- **False triggers per hour on noise**: triggers of ayzek's rule (below:
+  rising edges with hysteresis, re-arming below half the threshold, plus dt
+  restarts), over the hours actually monitored, excluding gaps.
 
 **Validation splices too.** Every validation trace gets `eval_lead_in_s`
 (40 s) of the station's older noise joined in front. That is longer than the

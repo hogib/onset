@@ -9,7 +9,7 @@ the data and its labels are in `DATA.md`.
 ```bash
 cd ~/Projects/Codings/onset
 uv sync --extra build          # obspy + scipy, for anything that reads miniSEED
-uv run --extra build pytest    # 29 tests, about a minute
+uv run --extra build pytest    # 46 tests, a few seconds (minutes on a cold first run)
 ```
 
 - **VIRTUAL_ENV warning.** If your shell has another project's venv active,
@@ -157,9 +157,12 @@ uv run --extra build onset replay runs/fdsn_v2 \
   are optional.
 
 **Outputs:**
-- `<NET.STA>.npz`: every token's time, p and dt.
+- `<NET.STA>.npz`: every token's time, p and dt; with the geometry head also
+  `dist_km`, `log_dist_sd`, `baz_deg` and `kappa`.
 - `<NET.STA>_triggers.csv`: each trigger's time, p and dated onset, and whether
-  it matched a catalogued arrival.
+  it matched a catalogued arrival; with the geometry head, its distance and
+  back-azimuth at the trigger and 10 s later. Triggers follow ayzek's rule
+  (rising edge or dt restart, 15 s apart).
 - `summary.json`: per station, the hours scored, triggers, context refreshes,
   detections and latency.
 
@@ -224,6 +227,12 @@ epoch 5  loss 0.1141 (bce 0.1045 dt 0.096)  val recall@1s 0.462 @thr 0.99000 (0.
   false alarms.
 - `median onset error from dt`: how well "now − dt" locates P at the moment of
   triggering. This is what places the picker's window.
+- `second onsets in the coda`: recall on the validation or test events that
+  carry a second event in their coda (every 4th), and over both onsets. This
+  is what catches aftershocks in ayzek.
+- `where is it (geometry head)`: distance and back-azimuth error by time since
+  P, and `within 1 sd`, the share inside the model's own uncertainty (0.68 when
+  it is honest).
 - The per-magnitude and per-label-source tables show where recall comes from.
 
 ## 7. Ship to ayzek
@@ -277,6 +286,10 @@ build-release/app/ayzek --speed 0 --detector transformer --catalog tests/catalog
 | `--transformer FILE` | transformer weights (default `models/transformer.ayzw`) |
 | `--locate geometry` | locate from the geometry head, no picker (the default when the model has the head) |
 | `--locate picks` | locate from P and S picks (the default otherwise) |
+| `--dt-reset BELOW,FROM`, `--no-dt-reset` | transformer: also trigger when dt restarts while p stays high (default 2,5), or rising edges only |
+| `--pick-anywhere` | transformer: let the picker search its whole 60 s window instead of near the transformer's P and before the next trigger |
+| `--geo-sd-scale`, `--geo-max-z`, `--geo-max-err-km` | geometry locator settings, all off by default (ayzek `docs/impl/15-geometry-location.md`) |
+| `--assess`, `--assess-csv FILE` | diagnostic: judge each alarm earthquake / possible / misfire / unclassified from S-P (ayzek `docs/impl/16-alarm-assessment.md`) |
 | `--threshold P`, `--release P` | transformer: default to the model's operating point and half of it |
 | `--scores DIR` | per-station CSV of every window's (6 s) or token's (transformer) probability |
 | `--record FILE` | every detection, pick and magnitude, for offline analysis |
@@ -284,7 +297,10 @@ build-release/app/ayzek --speed 0 --detector transformer --catalog tests/catalog
 
 **Differences between the two detectors:**
 - **P time.** The transformer dates P itself (trigger time − dt), so the
-  STA/LTA anchor is off for it.
+  STA/LTA anchor is off for it, and the picker looks for P near that P.
+- **Trigger.** A rising edge, or a dt restart while p stays high, which is
+  how an aftershock inside another event's coda is caught. A detection from
+  a restart is not absorbed as coda by the network stage.
 - **Gaps.** It runs through gaps, and its gap channel marks the missing
   samples. The 6 s detector drops every window that touches a gap.
 - **Report table.** Under `--detector transformer`, the "windows" column in the
@@ -315,7 +331,13 @@ Every scorecard dataset is replayed twice, identically except for
 - **Network level, the whole pipeline:** catalogue events detected, unmatched
   alarms, alarm delay, magnitude error, and false alarms per day on the quiet
   sets.
+- **Location:** the locator each run used, events located, time from alarm
+  to first location, epicentre error, and the error on the events both runs
+  located.
 - **Cost:** detector milliseconds per station-hour.
+
+With `--args '--assess'` the network table adds the unmatched alarms the
+assessment judges real ("unm. real").
 
 **Tips:**
 - `--jobs 6` runs six replays at once, about 2 cores each. Don't run it while
