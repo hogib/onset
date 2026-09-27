@@ -507,3 +507,21 @@ def test_exact_operating_point_lands_between_grid_steps():
         max(r["threshold"] for r in rows if r["threshold"] < grid["threshold"]))]["false_per_hour"]
     assert exact["threshold"] < grid["threshold"]
     assert exact["recall@1.0s"] == 1.0 and grid["recall@1.0s"] == 0.0
+
+
+def test_noise_audit_finds_triggers_seen_at_several_stations():
+    import pandas as pd
+    from onset.audit import coincidences
+    # Pull 1: an event at A and B 3 s apart (stations 20 km apart); pull 2:
+    # blips at C and D a minute apart; A's second blip alone.
+    trig = pd.DataFrame({
+        "pull": [1, 1, 1, 2, 2],
+        "station": ["A", "B", "A", "C", "D"],
+        "t": [100.0, 103.0, 250.0, 100.0, 160.0],
+        "lat": [39.0, 39.18, 39.0, 40.0, 40.1],
+        "lon": [28.0, 28.0, 28.0, 29.0, 29.0],
+    })
+    assert coincidences(trig).tolist() == [True, True, False, False, False]
+    # Sliding B by 100 s around its 290 s window breaks the pair.
+    period = {(1, "A"): (0.0, 290.0), (1, "B"): (0.0, 290.0)}
+    assert not coincidences(trig, shifts={(1, "B"): 100.0}, period=period).any()

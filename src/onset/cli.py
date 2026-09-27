@@ -11,6 +11,8 @@ COMMANDS = {
     "train": ("onset.train", "main", "train the detector"),
     "evaluate": ("onset.evaluate", "main", "latency and false triggers on a split"),
     "replay": ("onset.replay", "main", "run a trained detector over continuous miniSEED"),
+    "audit-noise": ("onset.audit", "main",
+                    "are the false triggers on noise uncatalogued earthquakes?"),
 }
 
 
