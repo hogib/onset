@@ -11,6 +11,14 @@ each batch.
 **Loss.** Weighted BCE on every token, plus `dt_weight` times smooth-L1 on
 seconds-since-P for the tokens after P. Weights come from `labels.token_targets`.
 
+**Run directories.** `--out` must be new: a directory that already holds a
+run is refused, so one directory never mixes the history, checkpoints and
+evaluations of several trainings. `--resume` continues the run in `--out`
+from its last completed epoch (config, weights, optimiser, step and best
+score from `state.pt`; the flags given are ignored except `--data`), with
+the learning-rate schedule where it left off. `--overwrite` moves an old
+run's files into `--out/previous_<time>/` and starts afresh.
+
 **Model selection** is on latency, not loss: after each epoch the whole
 validation split is scored, and the checkpoint with the best recall within 1 s
 of P, at the threshold that keeps validation noise within
@@ -32,10 +40,39 @@ import torch.nn.functional as F
 from torch.utils.data import ConcatDataset, DataLoader, WeightedRandomSampler
 
 from onset import metrics
-from onset.config import DataConfig, ModelConfig, TrainConfig, save_run_config
+from onset.config import (DataConfig, ModelConfig, TrainConfig, load_run_config,
+                          save_run_config)
 from onset.data import OnsetDataset
 from onset.evaluate import predict, print_geometry, print_summary
 from onset.model import OnsetDetector, count_parameters
+
+
+RUN_FILES = ("history.jsonl", "best.pt", "last.pt", "state.pt", "val_best.json")
+
+
+def prepare_out(out: Path, resume: bool, overwrite: bool):
+    """The saved training state to resume from, or None for a fresh run.
+
+    A directory that already holds a run is refused unless `resume` (continue
+    it) or `overwrite` (move its files aside) is given, so that one run
+    directory never mixes several trainings."""
+    held = [f for f in RUN_FILES if (out / f).exists()]
+    if resume:
+        if not (out / "state.pt").exists():
+            raise SystemExit(f"--resume: {out} has no state.pt (runs from before --resume "
+                             "cannot be continued; start a new --out)")
+        return torch.load(out / "state.pt", map_location="cpu", weights_only=False)
+    if held and not overwrite:
+        raise SystemExit(f"{out} already holds a run ({', '.join(held)}). Use a new --out, "
+                         "--resume to continue it, or --overwrite to move it aside.")
+    if held:
+        old = out / time.strftime("previous_%Y%m%d_%H%M%S")
+        old.mkdir()
+        for f in out.iterdir():
+            if f.is_file():
+                f.rename(old / f.name)
+        print(f"moved the previous run in {out} to {old}")
+    return None
 
 
 def seed_everything(seed: int):
@@ -200,6 +237,10 @@ def main(argv=None):
     p.add_argument("--fallback", action="append", default=[],
                    help="Extra event-only store, e.g. build-stead output. Repeatable.")
     p.add_argument("--out", required=True)
+    p.add_argument("--resume", action="store_true",
+                   help="Continue the run in --out from its last completed epoch.")
+    p.add_argument("--overwrite", action="store_true",
+                   help="Move an existing run in --out to --out/previous_<time>/ first.")
     g = p.add_argument_group("model (ModelConfig)")
     add_config_flags(g, ModelConfig)
     g = p.add_argument_group("data (DataConfig)")
@@ -208,13 +249,19 @@ def main(argv=None):
     add_config_flags(g, TrainConfig)
     a = p.parse_args(argv)
 
-    mcfg = apply_flags(ModelConfig(), a)
-    dcfg = apply_flags(DataConfig(), a)
-    tcfg = apply_flags(TrainConfig(), a)
-    seed_everything(tcfg.seed)
     out = Path(a.out)
-    out.mkdir(parents=True, exist_ok=True)
-    save_run_config(out, mcfg, dcfg, tcfg, sources={"data": a.data, "fallback": a.fallback})
+    state = prepare_out(out, a.resume, a.overwrite)
+    if state is not None:
+        mcfg, dcfg, tcfg, extra = load_run_config(out)
+        a.fallback = extra.get("sources", {}).get("fallback", a.fallback)
+        print(f"resuming {out} after epoch {state['epoch']} of {tcfg.epochs}")
+    else:
+        mcfg = apply_flags(ModelConfig(), a)
+        dcfg = apply_flags(DataConfig(), a)
+        tcfg = apply_flags(TrainConfig(), a)
+        out.mkdir(parents=True, exist_ok=True)
+        save_run_config(out, mcfg, dcfg, tcfg, sources={"data": a.data, "fallback": a.fallback})
+    seed_everything(tcfg.seed + (state["epoch"] if state else 0))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     amp = device.type == "cuda"
@@ -236,9 +283,13 @@ def main(argv=None):
     print(f"  val {len(val_ds)} traces")
 
     opt = torch.optim.AdamW(model.parameters(), lr=tcfg.lr, weight_decay=tcfg.weight_decay)
-    best, step = -1.0, 0
+    best, step, first = -1.0, 0, 0
+    if state is not None:
+        model.load_state_dict(state["model"])
+        opt.load_state_dict(state["opt"])
+        best, step, first = state["best"], state["step"], state["epoch"]
     history = open(out / "history.jsonl", "a")
-    for epoch in range(tcfg.epochs):
+    for epoch in range(first, tcfg.epochs):
         model.train()
         t0, sums, n = time.time(), np.zeros(3), 0
         for b in loader:
@@ -289,6 +340,8 @@ def main(argv=None):
                 indent=2, default=float))
             print(f"          -> best.pt (score {best:.3f}: recall within 1 s over "
                   f"first and second onsets)")
+        torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "epoch": epoch + 1,
+                    "step": step, "best": best}, out / "state.pt")
 
     hours = sum((~x["missing_tokens"]).sum() for x in noise) * mcfg.token_seconds / 3600
     best_rec = json.loads((out / "val_best.json").read_text())

@@ -189,9 +189,20 @@ A run directory holds:
 | `last.pt` | weights of the last epoch |
 | `history.jsonl` | one JSON line per epoch: losses and the full validation summary |
 | `val_best.json` | the best epoch's threshold sweep and operating point; the threshold ayzek uses comes from here |
+| `state.pt` | weights, optimiser, step and best score after the last completed epoch, for `--resume` |
 
-Use a **new `--out` per run**. Re-using a directory appends to `history.jsonl`
-and overwrites the weights.
+**One run per directory.** `onset train` refuses an `--out` that already holds
+a run, so the history, checkpoints and evaluations in a directory always
+belong to one training. To continue an interrupted run (Ctrl-C, a crash, a
+reboot), give the same `--data` and `--out` with `--resume`: it picks up after
+the last completed epoch with the saved config, optimiser and learning-rate
+schedule, and the other flags are ignored. `--overwrite` moves an old run's
+files into `--out/previous_<time>/` and starts a new one there.
+
+**Let a run finish.** The learning rate decays on a cosine over all
+`--epochs`; the last epochs, at a low rate, usually give the best
+checkpoint. A run stopped early exports a model that never had them;
+`--resume` it instead of starting over.
 
 ## 4. Evaluate on held-out stations
 
@@ -287,8 +298,10 @@ epoch 5  loss 0.1141 (bce 0.1045 dt 0.096)  val recall@1s 0.462 @thr 0.99000 (0.
   every 4th validation event) caught within 2 s. This is what the dt restart
   in ayzek's trigger depends on.
 - `dt min`: the median of the lowest dt within 3 s of each second onset's P.
-  ayzek's restart fires only once dt is at 2 s or less, so this should fall
-  below 2; near 2–3 the model sees the new onset but the trigger misses it.
+  ayzek's restart fires only once dt is at or below the restart level
+  (`--dt-reset-below`, 1 s by default, exported with the model), so this
+  should fall below it; above it the model sees the new onset but the
+  trigger misses it.
 - `score`: recall within 1 s over first and second onsets together. It decides
   `best.pt`. Triggers are counted with ayzek's rule (rising edge or dt
   restart, 15 s apart between P dates).
@@ -311,7 +324,8 @@ epoch 5  loss 0.1141 (bce 0.1045 dt 0.096)  val recall@1s 0.462 @thr 0.99000 (0.
 - `second onsets in the coda`: recall on the validation or test events that
   carry a second event in their coda (every 4th), and over both onsets. This
   is what catches aftershocks in ayzek. The line under it gives the median
-  lowest dt near their P (ayzek's restart needs 2 s or less).
+  lowest dt near their P (ayzek's restart needs it at or below the restart
+  level, 1 s by default).
 - `where is it (geometry head)`: distance and back-azimuth error by time since
   P, and `within 1 sd`, the share inside the model's own uncertainty (0.68 when
   it is honest).
@@ -368,7 +382,7 @@ build-release/app/ayzek --speed 0 --detector transformer --catalog tests/catalog
 | `--transformer FILE` | transformer weights (default `models/transformer.ayzw`) |
 | `--locate geometry` | locate from the geometry head, no picker (the default when the model has the head) |
 | `--locate picks` | locate from P and S picks (the default otherwise) |
-| `--dt-reset BELOW,FROM`, `--no-dt-reset` | transformer: also trigger when dt restarts while p stays high (default 2,5), or rising edges only |
+| `--dt-reset BELOW,FROM`, `--no-dt-reset` | transformer: also trigger when dt restarts while p stays high (default: the level exported with the model, else 2,5), or rising edges only |
 | `--pick-anywhere` | transformer: let the picker search its whole 60 s window instead of near the transformer's P and before the next trigger |
 | `--geo-sd-scale`, `--geo-max-z`, `--geo-max-err-km` | geometry locator settings, all off by default (ayzek `docs/impl/15-geometry-location.md`) |
 | `--assess`, `--assess-csv FILE` | diagnostic: judge each alarm earthquake / possible / misfire / unclassified from S-P (ayzek `docs/impl/16-alarm-assessment.md`) |

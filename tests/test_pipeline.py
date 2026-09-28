@@ -591,3 +591,31 @@ def test_noise_rules_and_exclusions(tmp_path):
     assert not ok(1, "S", 39.08, 28.98, t)              # 4 events within 75 km in +-12 h
     assert ok(1, "S", 40.60, 27.70, t)                  # the same time, far away
     assert drops == Counter({"noise_excluded": 1, "noise_active": 1})
+
+
+# -- run directories -------------------------------------------------------------
+
+def test_a_run_directory_is_never_reused(tmp_path):
+    from onset.train import prepare_out
+    assert prepare_out(tmp_path / "new", False, False) is None
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "history.jsonl").write_text("{}\n")
+    (run / "best.pt").write_bytes(b"x")
+    with pytest.raises(SystemExit, match="already holds a run"):
+        prepare_out(run, False, False)
+    with pytest.raises(SystemExit, match="no state.pt"):
+        prepare_out(run, True, False)
+    assert prepare_out(run, False, True) is None
+    moved = [d for d in run.iterdir() if d.name.startswith("previous_")]
+    assert len(moved) == 1 and (moved[0] / "history.jsonl").exists()
+    assert not (run / "history.jsonl").exists()
+
+
+def test_resume_reads_the_saved_state(tmp_path):
+    import torch
+    from onset.train import prepare_out
+    torch.save({"model": {}, "opt": {}, "epoch": 7, "step": 7000, "best": 0.5},
+               tmp_path / "state.pt")
+    st = prepare_out(tmp_path, True, False)
+    assert st["epoch"] == 7 and st["step"] == 7000 and st["best"] == 0.5

@@ -224,7 +224,11 @@ trigger ayzek runs (`metrics.TriggerRule`, from `TrainConfig.dt_reset*` and
 `min_trigger_gap_s`): a rising edge, or a restart of dt while p stays high,
 and no trigger whose P date is within 15 s of the last one. Every 4th
 validation event (`eval_second_every`) carries a second event in its coda at
-a fixed draw, scored on its own ("second onsets"). With `--dt-reset 0
+a fixed draw, scored on its own ("second onsets"). The restart level is
+1 s (`dt_reset_below`): once second onsets were trained harder, dt fell to
+about 0.8 s at a new onset, and at 2 s the restart also fired in codas.
+The export writes the rule into the model file, so ayzek triggers with the
+rule the checkpoint was selected with. With `--dt-reset 0
 --eval-second-every 0 --min-trigger-gap-s 0`, validation is what it was
 before.
 

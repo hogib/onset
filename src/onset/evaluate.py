@@ -111,7 +111,7 @@ def print_summary(title: str, s: dict, n_events: int, noise_hours: float):
               + f"   both onsets ≤1s {s['onset_recall@1.0s']:.1%}")
         if s.get("second_dt_min_p50") == s.get("second_dt_min_p50"):  # not NaN
             print(f"    lowest dt within {metrics.SECOND_DT_WINDOW_S:g} s of their P: median "
-                  f"{s['second_dt_min_p50']:.2f} s (ayzek's restart needs <= 2 s)")
+                  f"{s['second_dt_min_p50']:.2f} s (the restart needs it at or below its level)")
     print(f"  median latency {s['latency_p50_s']:.2f} s   "
           f"median onset error from dt {s['onset_abs_err_p50_s']:.2f} s")
 

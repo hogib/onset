@@ -123,7 +123,11 @@ class TrainConfig:
     # and evaluate: rising edges, plus a dt restart while p stays at or above
     # the threshold, with a minimum time between the P dates of two triggers.
     dt_reset: int = 1
-    dt_reset_below: float = 2.0
+    # 1 s, as ayzek runs the current model: with the stronger second-onset
+    # training dt falls to ~0.8 s at a new onset, and at 2 s the restart also
+    # fires in codas. export_transformer.py writes this rule into the model
+    # file, so selection and deployment use the same one.
+    dt_reset_below: float = 1.0
     dt_reset_from: float = 5.0
     dt_reset_tokens: int = 2
     min_trigger_gap_s: float = 15.0
