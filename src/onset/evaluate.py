@@ -52,11 +52,8 @@ def predict(model: OnsetDetector, ds: OnsetDataset, device, batch_size=64, worke
         dt = out["dt"].float().cpu().numpy()
         geo = None
         if "log_dist" in out:
-            v = out["baz_vec"].float()
             geo = {"log_dist": out["log_dist"].float().cpu().numpy(),
-                   "log_dist_var": out["log_dist_var"].float().cpu().numpy(),
-                   "baz": torch.atan2(v[..., 0], v[..., 1]).cpu().numpy(),
-                   "baz_log_kappa": out["baz_log_kappa"].float().cpu().numpy()}
+                   "log_dist_var": out["log_dist_var"].float().cpu().numpy()}
         x = b["x"].numpy()
         n_tok = p.shape[1]
         miss = x[:, : n_tok * stride, 3].reshape(len(x), n_tok, stride).max(-1) > 0
@@ -68,7 +65,7 @@ def predict(model: OnsetDetector, ds: OnsetDataset, device, batch_size=64, worke
                 item.update({g: v[k, :n] for g, v in geo.items()})
             if bool(b["is_event"][k]):
                 events.append({**item, "p_s": float(b["p_s"][k]), "tol_s": float(b["tol_s"][k]),
-                               "dist_km": float(b["dist_km"][k]), "baz_rad": float(b["baz_rad"][k]),
+                               "dist_km": float(b["dist_km"][k]),
                                "s_s": float(b["s_s"][k]), "p2_s": float(b["p2_s"][k]),
                                "tol2_s": float(b["tol2_s"][k])})
             else:
@@ -119,13 +116,12 @@ def print_summary(title: str, s: dict, n_events: int, noise_hours: float):
 def print_geometry(rows):
     if not rows:
         return
-    print("\n  where is it (geometry head), per event, median over its tokens")
+    print("\n  how far is it (geometry head), per event, median over its tokens")
     print(f"    {'window':<22s} {'n':>5} {'dist err km':>11} {'dist err %':>10} "
-          f"{'within 1 sd':>11} {'baz err deg':>11}")
+          f"{'within 1 sd':>11}")
     for r in rows:
         print(f"    {r['window']:<22s} {r['n']:>5} {r['dist_abs_err_km_p50']:>11.1f} "
-              f"{100 * r['dist_rel_err_p50']:>9.0f}% {r['cal_1sd']:>11.0%} "
-              f"{r['baz_err_deg_p50']:>11.0f}")
+              f"{100 * r['dist_rel_err_p50']:>9.0f}% {r['cal_1sd']:>11.0%}")
 
 
 def main(argv=None):

@@ -297,13 +297,10 @@ class OnsetDataset(Dataset):
                 "is_event": torch.tensor(p is not None),
                 "p_s": torch.tensor(np.nan if p_local is None else p_local / self.fs),
                 "tol_s": torch.tensor(tol), "index": torch.tensor(i),
-                # Geometry targets; NaN where unknown (noise, or a Z12 instrument's
-                # back-azimuth). The S time is local, like P, for the evaluation.
+                # Geometry target; NaN where unknown (noise). The S time is
+                # local, like P, for the evaluation.
                 "dist_km": torch.tensor(float(r.distance_km) if p is not None
                                         and pd.notna(r.get("distance_km")) else np.nan),
-                "baz_rad": torch.tensor(np.radians(float(r.back_azimuth_deg))
-                                        if p is not None and pd.notna(r.get("back_azimuth_deg"))
-                                        else np.nan),
                 "s_s": torch.tensor(self._s_local(r, p, p_local)),
                 "p2_s": torch.tensor(np.nan if p2 is None else p2 / self.fs),
                 "tol2_s": torch.tensor(tol2 / self.fs),

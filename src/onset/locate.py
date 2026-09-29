@@ -1,31 +1,27 @@
 """Locating an event from the geometry head, the reference for ayzek's locator.
 
 The geometry head (`OnsetDetector.geometry`, `ModelConfig.geometry=1`) says,
-at every token after P, where the event is as seen from one station:
+at every token after P, how far the event is from one station:
 
     log_dist, log_dist_var    epicentral distance, Gaussian in log km
                               (log_dist_var is the log of its variance, sd_i^2)
-    baz, kappa                direction station -> event, von Mises
 
-The head is trained with exactly those negative log-likelihoods
-(`train.geometry_loss`), so each station's output is a likelihood over the
-epicentre, and a network location is the epicentre that maximises their
-product, together with the P times the detector dates from dt:
+The head is trained with exactly that negative log-likelihood
+(`train.geometry_loss`), so each station's output is a ring of likelihood
+around it, and a network location is the epicentre that maximises the
+product of the rings, together with the P times the detector dates from dt:
 
     J(x) = sum_i  (log max(D_i(x), 1) - log_dist_i)^2 / (2 sd_i^2)
-         + sum_i  kappa_i (1 - cos(AZ_i(x) - baz_i))
          + sum_i  (r_i(x) - origin(x))^2 / (2 sigma_p^2)
 
-with D_i and AZ_i the distance and azimuth from station i to x, r_i the P
-time minus the travel time from x in a uniform half-space, and origin(x)
-their mean (the least-squares origin). A station with no back-azimuth (a
-Z12 instrument, or a model whose direction is not yet confident) adds only
-its distance and P time.
+with D_i the distance from station i to x, r_i the P time minus the travel
+time from x in a uniform half-space, and origin(x) their mean (the
+least-squares origin).
 
 Unlike the S-P locator this needs no S pick and no 60 s picker window: it is
-available from the trigger on, sharpens as the stations' own uncertainties
-shrink (once S is inside the model's lookback), and one station with a
-back-azimuth already gives an epicentre.
+available from the trigger on and sharpens as the stations' own
+uncertainties shrink (once S is inside the model's lookback). Two rings
+cross in two mirror points, so it needs three stations (`MIN_STATIONS`).
 
 The search is a grid over the epicentre at fixed depth: +-3 deg at 0.05 deg,
 then +-0.1 deg at 0.005 deg around the best point. ayzek's
@@ -41,6 +37,8 @@ import numpy as np
 EARTH_RADIUS_KM = 6371.0
 # Delta J for a 68% region in two dimensions (chi-square 2.30 / 2).
 ONE_SIGMA_DJ = 1.15
+# Two distance rings leave a mirror ambiguity; the third station resolves it.
+MIN_STATIONS = 3
 
 
 @dataclass
@@ -52,8 +50,6 @@ class StationEstimate:
     p_time: float                   # seconds, any common epoch
     log_dist: float                 # log km
     log_dist_sd: float              # standard deviation of log_dist
-    baz_rad: float = np.nan         # station -> event, clockwise from north; nan if unknown
-    kappa: float = 0.0              # von Mises concentration of baz_rad
 
 
 @dataclass
@@ -70,13 +66,10 @@ class Location:
 
 def estimates_from_head(out: dict, token: int | slice = -1, batch: int = 0) -> dict:
     """The geometry outputs of `OnsetDetector.forward` at one token as plain
-    numbers: `log_dist`, `log_dist_sd`, `baz_rad` and `kappa`. The head's
-    `log_dist_var` is the log of the variance."""
-    v = out["baz_vec"][batch, token].float()
+    numbers: `log_dist` and `log_dist_sd`. The head's `log_dist_var` is the
+    log of the variance."""
     return {"log_dist": float(out["log_dist"][batch, token]),
-            "log_dist_sd": float((0.5 * out["log_dist_var"][batch, token]).exp()),
-            "baz_rad": float(np.arctan2(float(v[0]), float(v[1]))),
-            "kappa": float(out["baz_log_kappa"][batch, token].exp())}
+            "log_dist_sd": float((0.5 * out["log_dist_var"][batch, token]).exp())}
 
 
 def distance_km(lat1, lon1, lat2, lon2):
@@ -85,25 +78,6 @@ def distance_km(lat1, lon1, lat2, lon2):
     a = (np.sin((lat2 - lat1) * r / 2) ** 2
          + np.cos(lat1 * r) * np.cos(lat2 * r) * np.sin((lon2 - lon1) * r / 2) ** 2)
     return 2 * EARTH_RADIUS_KM * np.arcsin(np.sqrt(np.minimum(a, 1.0)))
-
-
-def azimuth_rad(lat1, lon1, lat2, lon2):
-    """Initial bearing from point 1 to point 2, clockwise from north, radians."""
-    r = np.pi / 180.0
-    p1, p2, dl = lat1 * r, lat2 * r, (lon2 - lon1) * r
-    return np.arctan2(np.sin(dl) * np.cos(p2),
-                      np.cos(p1) * np.sin(p2) - np.sin(p1) * np.cos(p2) * np.cos(dl))
-
-
-def destination(lat, lon, az_rad, km):
-    """The point `km` from (lat, lon) along bearing `az_rad`."""
-    r = np.pi / 180.0
-    d = km / EARTH_RADIUS_KM
-    p1, l1 = lat * r, lon * r
-    p2 = np.arcsin(np.sin(p1) * np.cos(d) + np.cos(p1) * np.sin(d) * np.cos(az_rad))
-    l2 = l1 + np.arctan2(np.sin(az_rad) * np.sin(d) * np.cos(p1),
-                         np.cos(d) - np.sin(p1) * np.sin(p2))
-    return p2 / r, l2 / r
 
 
 def terms(lat, lon, obs: list[StationEstimate], vp: float, depth_km: float,
@@ -116,10 +90,7 @@ def terms(lat, lon, obs: list[StationEstimate], vp: float, depth_km: float,
     parts, resid = [], []
     for o in obs:
         d = distance_km(o.lat, o.lon, lat, lon)
-        part = (np.log(np.maximum(d, 1.0)) - o.log_dist) ** 2 / (2.0 * o.log_dist_sd ** 2)
-        if np.isfinite(o.baz_rad) and o.kappa > 0:
-            part = part + o.kappa * (1.0 - np.cos(azimuth_rad(o.lat, o.lon, lat, lon) - o.baz_rad))
-        parts.append(part)
+        parts.append((np.log(np.maximum(d, 1.0)) - o.log_dist) ** 2 / (2.0 * o.log_dist_sd ** 2))
         resid.append(o.p_time - np.hypot(d, depth_km) / vp)
     parts, resid = np.stack(parts), np.stack(resid)
     origin = resid.mean(axis=0)
@@ -128,20 +99,15 @@ def terms(lat, lon, obs: list[StationEstimate], vp: float, depth_km: float,
 
 
 def start_point(obs: list[StationEstimate]) -> tuple[float, float]:
-    """Mean of the single-station epicentres (each station's distance along
-    its back-azimuth), or the station centroid when no station has one."""
-    pts = [destination(o.lat, o.lon, o.baz_rad, float(np.exp(o.log_dist)))
-           for o in obs if np.isfinite(o.baz_rad) and o.kappa > 0]
-    if not pts:
-        pts = [(o.lat, o.lon) for o in obs]
-    return float(np.mean([p[0] for p in pts])), float(np.mean([p[1] for p in pts]))
+    """The station centroid, where the grid search is centred."""
+    return float(np.mean([o.lat for o in obs])), float(np.mean([o.lon for o in obs]))
 
 
 def locate(obs: list[StationEstimate], vp: float = 6.0, depth_km: float = 10.0,
            sigma_p: float = 0.5, half_deg: float = 3.0, step_deg: float = 0.05) -> Location | None:
-    """Grid-search epicentre. None when the stations cannot fix one: fewer
-    than two stations and no back-azimuth."""
-    if not obs or (len(obs) < 2 and not any(np.isfinite(o.baz_rad) and o.kappa > 0 for o in obs)):
+    """Grid-search epicentre. None with fewer than `MIN_STATIONS` stations,
+    which cannot fix one."""
+    if len(obs) < MIN_STATIONS:
         return None
     lat0, lon0 = start_point(obs)
 
@@ -170,13 +136,13 @@ def locate(obs: list[StationEstimate], vp: float = 6.0, depth_km: float = 10.0,
 
 
 def locate_robust(obs: list[StationEstimate], max_rms: float = 2.0, **kw) -> Location | None:
-    """`locate`, then while the P rms exceeds `max_rms` and more than two
-    stations remain, drops the station contributing most to J and relocates.
+    """`locate`, then while the P rms exceeds `max_rms` and more than
+    `MIN_STATIONS` remain, drops the station contributing most to J and relocates.
     ayzek's `Network::locate` does the same."""
     obs, dropped = list(obs), []
     while True:
         loc = locate(obs, **kw)
-        if loc is None or loc.rms <= max_rms or len(obs) <= 2:
+        if loc is None or loc.rms <= max_rms or len(obs) <= MIN_STATIONS:
             if loc is not None:
                 loc.dropped = dropped
             return loc

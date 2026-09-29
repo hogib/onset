@@ -180,24 +180,14 @@ def lr_at(step, tcfg):
 
 
 def geometry_loss(out, b):
-    """Gaussian NLL on log distance and von Mises NLL on back-azimuth, over the
-    tokens where dt is trained (after P, outside the label's tolerance) and,
+    """Gaussian NLL on log distance, over the tokens where dt is trained (after P, outside the label's tolerance) and,
     with a second event added, before its P: the targets are the first event's."""
     m = b.get("geo_mask", b["dt_mask"])
     d_ok = torch.isfinite(b["dist_km"])[:, None] & (m > 0)
     y = torch.log(torch.nan_to_num(b["dist_km"], nan=1.0).clamp_min(1.0))[:, None]
     mu, lv = out["log_dist"].float(), out["log_dist_var"].float()
     nll_d = 0.5 * (lv + (y - mu) ** 2 * torch.exp(-lv))
-    loss_d = (nll_d * d_ok).sum() / d_ok.sum().clamp_min(1)
-
-    b_ok = torch.isfinite(b["baz_rad"])[:, None] & (m > 0)
-    th = torch.nan_to_num(b["baz_rad"], nan=0.0)[:, None]
-    v = out["baz_vec"].float()
-    cos_err = (v[..., 0] * torch.sin(th) + v[..., 1] * torch.cos(th)) / (v.norm(dim=-1) + 1e-6)
-    kappa = torch.exp(out["baz_log_kappa"].float())
-    nll_b = -kappa * cos_err + torch.log(torch.special.i0e(kappa)) + kappa
-    loss_b = (nll_b * b_ok).sum() / b_ok.sum().clamp_min(1)
-    return loss_d, loss_b
+    return (nll_d * d_ok).sum() / d_ok.sum().clamp_min(1)
 
 
 def loss_fn(out, b, dt_weight, geo_weight=0.0):
@@ -209,8 +199,7 @@ def loss_fn(out, b, dt_weight, geo_weight=0.0):
         / m.sum().clamp_min(1)
     loss = bce + dt_weight * dt
     if "log_dist" in out and geo_weight > 0:
-        ld, lb = geometry_loss(out, b)
-        loss = loss + geo_weight * (ld + lb)
+        loss = loss + geo_weight * geometry_loss(out, b)
     return loss, bce, dt
 
 
@@ -329,7 +318,7 @@ def main(argv=None):
                  if s.get("second_n") else "")
               + f"  {time.time() - t0:.0f}s"
               + "".join(f"  | {g['window'].split(' after')[0]}: {g['dist_abs_err_km_p50']:.1f} km"
-                        f" {g['baz_err_deg_p50']:.0f}°" for g in geo
+                        for g in geo
                         if g["window"] in ("1-2 s after P", "after S")), flush=True)
         torch.save(model.state_dict(), out / "last.pt")
         if s["score"] > best:

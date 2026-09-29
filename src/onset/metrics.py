@@ -262,12 +262,8 @@ def summary(rows: list[dict], fa_target_per_hour: float, op: dict | None = None)
 GEO_BINS_S = ((0.0, 0.5), (0.5, 1.0), (1.0, 2.0), (2.0, 4.0), (4.0, 8.0), (8.0, 30.0))
 
 
-def _angle_deg(a):
-    return np.degrees(np.abs((a + np.pi) % (2 * np.pi) - np.pi))
-
-
 def geometry_table(events: list[dict], stride: int, fs: float) -> list[dict]:
-    """Distance and back-azimuth error by time since P, and before/after S.
+    """Distance error by time since P, and before/after S.
 
     Each event contributes its median over the tokens in a bin, so a long
     trace does not outweigh a short one. `cal_1sd` is the share of events
@@ -278,7 +274,7 @@ def geometry_table(events: list[dict], stride: int, fs: float) -> list[dict]:
     bins = [(f"{a:g}-{b:g} s after P", a, b, None) for a, b in GEO_BINS_S]
     bins += [("after P, before S", 0.0, 1e9, "before"), ("after S", 0.0, 1e9, "after")]
     for name, lo, hi, phase in bins:
-        d_err, d_rel, cal, b_err = [], [], [], []
+        d_err, d_rel, cal = [], [], []
         for e in events:
             if "log_dist" not in e or not np.isfinite(e.get("dist_km", np.nan)):
                 continue
@@ -298,13 +294,9 @@ def geometry_table(events: list[dict], stride: int, fs: float) -> list[dict]:
             d_err.append(np.median(np.abs(np.exp(e["log_dist"][m]) - e["dist_km"])))
             d_rel.append(np.median(np.abs(err)))
             cal.append(np.median(np.abs(err) <= np.exp(0.5 * e["log_dist_var"][m])))
-            if np.isfinite(e.get("baz_rad", np.nan)):
-                b_err.append(np.median(_angle_deg(e["baz"][m] - e["baz_rad"])))
         if d_err:
             rows.append({"window": name, "n": len(d_err),
                          "dist_abs_err_km_p50": float(np.median(d_err)),
                          "dist_rel_err_p50": float(np.expm1(np.median(d_rel))),
-                         "cal_1sd": float(np.mean(cal)),
-                         "baz_err_deg_p50": float(np.median(b_err)) if b_err else np.nan,
-                         "n_baz": len(b_err)})
+                         "cal_1sd": float(np.mean(cal))})
     return rows

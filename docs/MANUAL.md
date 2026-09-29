@@ -98,8 +98,8 @@ longer window gives training crops more variety and validation more noise
 hours. `build.json` counts every trace dropped as `*_absent` or `*_short`.
 
 - `--event-start-offset` is where the files start relative to origin.
-- Every event trace gets distance, back-azimuth and component labels for the
-  geometry head.
+- Every event trace gets distance, back-azimuth and component labels. The
+  geometry head trains on the distance.
 - Traces whose event would not be visible at that distance are dropped
   (`catalog.VISIBILITY`).
 - A noise or context window is dropped if a visible catalogued event arrives
@@ -176,8 +176,8 @@ uv run onset train --data datasets/fdsn_v1 --out runs/fdsn_v2
   share of the loss (default 0.1) and `--geo-min-sd` for the smallest
   distance uncertainty it may state (default 0.1, about 10%; without a floor
   it keeps shrinking its uncertainty on training data and turns
-  overconfident). `evaluate` then prints distance and
-  back-azimuth error by time since P, and ayzek locates from it (§8).
+  overconfident). `evaluate` then prints distance error by time since
+  P, and ayzek locates from it (§8).
 - **Quick smoke run:** `--epochs 2 --steps-per-epoch 50`.
 
 A run directory holds:
@@ -244,10 +244,10 @@ uv run --extra build onset replay runs/fdsn_v2 \
 
 **Outputs:**
 - `<NET.STA>.npz`: every token's time, p and dt; with the geometry head also
-  `dist_km`, `log_dist_sd`, `baz_deg` and `kappa`.
+  `dist_km` and `log_dist_sd`.
 - `<NET.STA>_triggers.csv`: each trigger's time, p and dated onset, and whether
-  it matched a catalogued arrival; with the geometry head, its distance and
-  back-azimuth at the trigger and 10 s later. Triggers follow ayzek's rule
+  it matched a catalogued arrival; with the geometry head, its distance at
+  the trigger and 10 s later. Triggers follow ayzek's rule
   (rising edge or dt restart, 15 s apart).
 - `summary.json`: per station, the hours scored, triggers, context refreshes,
   detections and latency.
@@ -326,8 +326,7 @@ epoch 5  loss 0.1141 (bce 0.1045 dt 0.096)  val recall@1s 0.462 @thr 0.99000 (0.
   is what catches aftershocks in ayzek. The line under it gives the median
   lowest dt near their P (ayzek's restart needs it at or below the restart
   level, 1 s by default).
-- `where is it (geometry head)`: distance and back-azimuth error by time since
-  P, and `within 1 sd`, the share inside the model's own uncertainty (0.68 when
+- `how far is it (geometry head)`: distance error by time since P, and `within 1 sd`, the share inside the model's own uncertainty (0.68 when
   it is honest).
 - The per-magnitude and per-label-source tables show where recall comes from.
 
@@ -351,8 +350,8 @@ meson test -C build-release test_transformer                 # C++ vs PyTorch on
 
 **A run trained with `--geometry 1`** exports its geometry head too, and the
 fixtures include its outputs, which `test_transformer` compares at every
-token. The export then prints the head's distance and back-azimuth on DEMI
-next to the true ones for the Sındırgı M4.9. `meson test -C build-release
+token. The export then prints the head's distance on DEMI next to the true
+one for the Sındırgı M4.9. `meson test -C build-release
 test_locate` checks ayzek's locator against the scenarios of
 `tests/test_locate.py`.
 

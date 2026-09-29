@@ -27,8 +27,8 @@ with TauP, refined with AIC, and matched to triggers:
 
 Writes `<out>/<NET.STA>.npz` (per-token time, p, dt), `<NET.STA>_triggers.csv`,
 and `summary.json`. A model with the geometry head adds per-token `dist_km`,
-`log_dist_sd`, `baz_deg` and `kappa` to the npz, and those values at each
-trigger and 10 s after it to the triggers CSV.
+and `log_dist_sd` to the npz, and those values at each trigger and 10 s after
+it to the triggers CSV.
 """
 from __future__ import annotations
 
@@ -81,8 +81,8 @@ def replay_station(model, dcfg, wave, missing, block_s=60.0, quiet=0.3):
 
     Returns:
         (probabilities, dt, context refresh sample indices, geometry), the
-        last a dict of per-token `dist_km`, `log_dist_sd`, `baz_deg` and
-        `kappa` for a model with the geometry head, else None.
+        last a dict of per-token `dist_km` and `log_dist_sd` for a model with
+        the geometry head, else None.
     """
     cfg = model.cfg
     s, fs = cfg.stride, cfg.sample_rate
@@ -98,7 +98,7 @@ def replay_station(model, dcfg, wave, missing, block_s=60.0, quiet=0.3):
     probs = np.zeros(n_tok, np.float32)
     dts = np.zeros(n_tok, np.float32)
     geo = ({k: np.full(n_tok, np.nan, np.float32)
-            for k in ("dist_km", "log_dist_sd", "baz_deg", "kappa")} if cfg.geometry else None)
+            for k in ("dist_km", "log_dist_sd")} if cfg.geometry else None)
     for t0 in range(0, n_tok, block):
         t1 = min(t0 + block, n_tok)
         a = max(0, t0 - lead)
@@ -111,9 +111,6 @@ def replay_station(model, dcfg, wave, missing, block_s=60.0, quiet=0.3):
             g = {k: v[0, t0 - a:].float().cpu() for k, v in out.items() if k != "logit"}
             geo["dist_km"][t0:t1] = g["log_dist"].exp().numpy()
             geo["log_dist_sd"][t0:t1] = (0.5 * g["log_dist_var"]).exp().numpy()
-            geo["baz_deg"][t0:t1] = np.degrees(torch.atan2(g["baz_vec"][:, 0],
-                                                           g["baz_vec"][:, 1]).numpy()) % 360
-            geo["kappa"][t0:t1] = g["baz_log_kappa"].exp().numpy()
 
         end = t1 * s
         ctx_tok = ctx_len // s
@@ -194,7 +191,7 @@ def main(argv=None):
         trig = pd.DataFrame({"time_s": t[edges], "utc": [str(t_start + x) for x in t[edges]],
                              "p": probs[edges], "onset_s": t[edges] - dts[edges]})
         if geo is not None:
-            # Where the event is as seen from here, at the trigger and GEO_AFTER_S
+            # How far the event is from here, at the trigger and GEO_AFTER_S
             # later (ayzek relocates as these sharpen).
             for tag, k in [("", edges),
                            (f"_{GEO_AFTER_S:g}s", np.minimum(edges + int(GEO_AFTER_S * fs / s),

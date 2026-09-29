@@ -5,8 +5,8 @@ P arrival, so the phase picker gets the right window as soon as possible. It is
 the first of three stages: detector, then a noise/P/S picker, then a
 magnitude regressor. Only the detector is built here; ayzek supplies the
 other two. With the geometry head (`ModelConfig.geometry`) the detector also
-says where the event is, which ayzek uses to locate events without the
-picker (§6).
+says how far away the event is, which ayzek uses to locate events without
+the picker (§6).
 
 The deployment target is ayzek (C++23, hand-written inference, Raspberry Pi).
 Everything below is chosen so that the model can be transcribed there and
@@ -285,14 +285,21 @@ runs once a minute.
 Conv1d, GELU, LayerNorm and multi-head attention already exist.
 
 **Location from the geometry head.** A model trained with `--geometry 1`
-also says, per token after P, how far away the event is (Gaussian in log km)
-and in which direction (von Mises back-azimuth). ayzek uses that in place of
-its S-P picker: every station sends its latest estimate once a second for
-20 s after its trigger, and the network stage maximises the product of the
-stations' likelihoods together with their P times (`locate.py`, transcribed
-as ayzek's `pipeline/locate.cpp`). That gives a location from the trigger on
-instead of after a 60 s picker window, and from a single station when it has
-a back-azimuth. See ayzek's `docs/impl/15-geometry-location.md`.
+also says, per token after P, how far away the event is (Gaussian in log km).
+Before S it can only judge that from the P wave; once S is inside its
+lookback it can in effect read the S−P time, and its stated uncertainty
+should shrink to match. ayzek uses that in place of its S-P picker: every
+station sends its latest estimate once a second for 20 s after its trigger,
+and the network stage finds the epicentre where the stations' distance rings
+cross, together with their P times (`locate.py`, transcribed as ayzek's
+`pipeline/locate.cpp`). That gives a location from the trigger on instead of
+after a 60 s picker window. Two rings cross in two mirror points, so it
+needs three stations.
+
+The head once also gave a back-azimuth (von Mises), which let a single
+station locate. It was dropped for simplicity: the network always has three
+stations, and the rings and P times fix the epicentre without it. See
+ayzek's `docs/impl/15-geometry-location.md`.
 
 ## 7. Known limitations and open questions
 

@@ -249,7 +249,8 @@ def test_geometry_head_trains_and_leaves_detection_alone(store):
     ds = OnsetDataset(store, "train", DataConfig(seq_seconds=20), mc, True)
     b = next(iter(DataLoader(ds, batch_size=3)))
     out = OnsetDetector(mc)(b["x"], b["ctx"], b["has_ctx"])
-    assert {"log_dist", "log_dist_var", "baz_vec", "baz_log_kappa"} <= set(out)
+    assert {"log_dist", "log_dist_var"} <= set(out)
+    assert not {"baz_vec", "baz_log_kappa"} & set(out)
     loss, _, _ = loss_fn(out, b, 0.1, geo_weight=0.1)
     loss.backward()
     assert torch.isfinite(loss)
@@ -259,13 +260,11 @@ def test_geometry_head_trains_and_leaves_detection_alone(store):
 def test_geometry_table_reads_errors_by_time_since_p():
     t_tok = 300
     ev = {"p": np.zeros(t_tok), "missing_tokens": np.zeros(t_tok, bool), "p_s": 5.0,
-          "s_s": 12.0, "dist_km": 40.0, "baz_rad": np.radians(90.0),
-          "log_dist": np.full(t_tok, np.log(44.0)), "log_dist_var": np.full(t_tok, np.log(0.2 ** 2)),
-          "baz": np.full(t_tok, np.radians(100.0))}
+          "s_s": 12.0, "dist_km": 40.0,
+          "log_dist": np.full(t_tok, np.log(44.0)), "log_dist_var": np.full(t_tok, np.log(0.2 ** 2))}
     rows = {r["window"]: r for r in metrics.geometry_table([ev], 10, FS)}
     r = rows["1-2 s after P"]
     assert r["dist_abs_err_km_p50"] == pytest.approx(4.0, rel=1e-6)
-    assert r["baz_err_deg_p50"] == pytest.approx(10.0, abs=1e-6)
     assert r["cal_1sd"] == 1.0                     # |log(44/40)| = 0.095 < 0.2
     assert "after S" in rows and "after P, before S" in rows
 

@@ -6,8 +6,7 @@ implementations are held to the same answers.
 import numpy as np
 import pytest
 
-from onset.locate import (StationEstimate, azimuth_rad, destination, distance_km, locate,
-                          locate_robust)
+from onset.locate import StationEstimate, distance_km, locate, locate_robust
 
 EPI = (39.20, 28.10)               # an epicentre near Sındırgı
 ORIGIN = 1000.0
@@ -15,18 +14,15 @@ VP, DEPTH = 6.0, 10.0
 STATIONS = {"A": (39.60, 28.00), "B": (38.90, 27.60), "C": (39.10, 28.70), "D": (39.45, 28.55)}
 
 
-def observe(code, dist_sd=0.1, kappa=20.0, dp=0.0, dist_scale=1.0, baz_off_deg=0.0):
+def observe(code, dist_sd=0.1, dp=0.0, dist_scale=1.0):
     lat, lon = STATIONS[code]
     d = float(distance_km(lat, lon, *EPI))
     return StationEstimate(code, lat, lon, ORIGIN + np.hypot(d, DEPTH) / VP + dp,
-                           np.log(d * dist_scale), dist_sd,
-                           float(azimuth_rad(lat, lon, *EPI)) + np.radians(baz_off_deg), kappa)
+                           np.log(d * dist_scale), dist_sd)
 
 
-def test_geodesy_round_trips():
-    lat, lon = destination(39.0, 28.0, np.radians(60.0), 50.0)
-    assert distance_km(39.0, 28.0, lat, lon) == pytest.approx(50.0, rel=1e-6)
-    assert np.degrees(azimuth_rad(39.0, 28.0, lat, lon)) == pytest.approx(60.0, abs=1e-6)
+def test_one_degree_of_latitude():
+    assert distance_km(39.0, 28.0, 40.0, 28.0) == pytest.approx(111.19, abs=0.01)
 
 
 def test_exact_observations_recover_the_epicentre():
@@ -37,29 +33,22 @@ def test_exact_observations_recover_the_epicentre():
     assert loc.n_stations == 4
 
 
-def test_one_station_with_a_back_azimuth_is_enough():
-    loc = locate([observe("A")])
+def test_two_stations_are_not_enough():
+    """Two rings cross in two mirror points."""
+    assert locate([observe("A"), observe("B")]) is None
+
+
+def test_three_stations_are_enough():
+    loc = locate([observe(c) for c in ("A", "B", "C")])
     assert distance_km(loc.lat, loc.lon, *EPI) < 1.0
 
 
-def test_one_station_without_a_back_azimuth_is_not():
-    o = observe("A")
-    o.baz_rad = np.nan
-    assert locate([o]) is None
-
-
-def test_distance_and_time_alone_locate_three_stations():
-    obs = [observe(c, kappa=0.0) for c in ("A", "B", "C")]
-    loc = locate(obs)
-    assert distance_km(loc.lat, loc.lon, *EPI) < 2.0
-
-
 def test_uncertain_stations_count_for_less():
-    """A station 30% off in distance and 40 deg off in direction moves the
-    solution little when it says it is unsure, and a lot when it says it is sure."""
+    """A station 50% off in distance moves the solution little when it says it
+    is unsure, and a lot when it says it is sure."""
     good = [observe(c) for c in ("A", "B", "C")]
-    unsure = locate(good + [observe("D", dist_sd=1.0, kappa=0.5, dist_scale=1.3, baz_off_deg=40)])
-    sure = locate(good + [observe("D", dist_sd=0.02, kappa=200, dist_scale=1.3, baz_off_deg=40)])
+    unsure = locate(good + [observe("D", dist_sd=1.0, dist_scale=1.5)])
+    sure = locate(good + [observe("D", dist_sd=0.02, dist_scale=1.5)])
     assert distance_km(unsure.lat, unsure.lon, *EPI) < 2.0
     assert distance_km(sure.lat, sure.lon, *EPI) > distance_km(unsure.lat, unsure.lon, *EPI) + 2.0
 
@@ -72,6 +61,7 @@ def test_a_bad_p_time_is_dropped():
 
 
 def test_error_radius_follows_the_stated_uncertainty():
-    tight = locate([observe("A", dist_sd=0.05, kappa=100)])
-    loose = locate([observe("A", dist_sd=0.4, kappa=5)])
+    """With loose P times, the rings' widths set the error radius."""
+    tight = locate([observe(c, dist_sd=0.05) for c in ("A", "B", "C")], sigma_p=10.0)
+    loose = locate([observe(c, dist_sd=0.4) for c in ("A", "B", "C")], sigma_p=10.0)
     assert loose.err_km > 2 * tight.err_km
