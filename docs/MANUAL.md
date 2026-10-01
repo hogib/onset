@@ -132,6 +132,15 @@ for s in train val test; do uv run onset audit-noise runs/x --data datasets/fdsn
 uv run --extra build onset build-fdsn ... --exclude-noise runs/x/audit_noise_{train,val,test}.csv
 ```
 
+**Onsets in the coda** (`later_p`, docs/DATA.md): `build-fdsn` labels the
+catalogued arrivals after each event trace's own P. A store built before that
+gets them in place, without a rebuild (the old index is kept as
+`index.csv.bak`):
+
+```bash
+uv run --extra build onset label-later --data datasets/fdsn_wide_x
+```
+
 **Rebuilding:**
 - A rebuild is only needed if the *stored* data changes: filter, window
   lengths, labels or contamination rules.

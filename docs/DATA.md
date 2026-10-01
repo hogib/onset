@@ -107,6 +107,41 @@ of the loss:
 preprocessing differ from KO. It is an estimate for KO, not a measurement on
 KO.
 
+## Onsets in an event trace's own coda (`later_p`)
+
+An event window runs 60 s or more past origin, and in a sequence it often
+holds another catalogued event after its own P. The build drops a trace with
+a catalogued arrival *before* its P, but one after it used to stay in
+unlabelled, so the model was taught that a real onset inside a coda is more
+coda: dt kept counting through it, the opposite of the restart ayzek's
+trigger fires on.
+
+Each such arrival is now labelled (`onset/later.py`; `build-fdsn` writes it,
+`onset label-later` adds it to an existing store): predicted with TauP and
+refined by AIC like the first P. An accepted pick is a labelled onset, with
+a tolerance of 0.5 s, and dt restarts there as for a synthetic second event;
+otherwise only the TauP prediction is kept, and dt is not trained from 1 s
+before it to 10 s after (plus 1 s of tolerance each side), where it depends
+on where the onset really was.
+
+| store | event traces with one | arrivals picked | not picked | within 39 s of P (crop reach) |
+|---|---:|---:|---:|---:|
+| `fdsn_wide_x` | 6744 (5.6%) | 4787 | 2395 | 1130 picked, 894 not |
+| `fdsn_v1` | 1176 (2.2%) | 780 | 438 | 475 picked, 278 not |
+
+On 400 `fdsn_wide_x` traces, the accepted picks land a median +0.79 s after
+the TauP prediction (5th–95th percentile −0.74 … +2.37 s), as the first-P
+picks do (+0.86 s), so they are mostly the arrival and not a burst of coda;
+about 13% lie more than a second from that peak. Their median SNR (the
+second after the pick over the second before) is 4.3.
+
+The picked ones in the validation split (499 on `fdsn_wide_x`) are scored on
+their own as real coda onsets ("catalogued onsets in the coda" in
+`evaluate`), next to the synthetic second events. Traces that hold one are
+not used as sources for synthetic second events, whose own coda onsets would
+come along unlabelled. The catalogue misses small events, so this labels the
+catalogued part of the problem only.
+
 ## STEAD (fallback)
 
 ```bash

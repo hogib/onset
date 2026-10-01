@@ -194,6 +194,13 @@ counts ─ causal Butterworth 1–45 Hz, 4th order, restarts after gaps ─ ÷ �
   (`second_dt_s`, `second_dt_weight`), and the second P now lands after dt
   has reached its 10 s cap in most crops, as in a sequence. Validation
   reports the median lowest dt within 3 s of each second P.
+- **Real onsets in the coda.** "Every stored trace holds one event" was not
+  quite true: 5.6% of `fdsn_wide_x`'s event traces hold another catalogued
+  arrival after their own P, and those were trained as coda, against the
+  restart. They are now labelled (`later_p`, DATA.md): a picked one restarts
+  dt like a second event, with the same weighting; around an unpicked one dt
+  is not trained. Validation scores the picked ones as real coda onsets,
+  which the synthetic second events stood in for until now.
 - **Sampling.** Half of each batch is noise traces and half event traces,
   whatever the group sizes. `--fallback` stores (STEAD) take
   `fallback_weight` of the event half.

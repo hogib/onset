@@ -291,6 +291,69 @@ def test_second_onset_restart_is_upweighted():
     assert (t["dt_w"][ends >= 605 + 15 + 300] == 1.0).all()
 
 
+def test_a_traces_own_later_onsets_restart_or_mask_dt():
+    """A picked later onset restarts dt like a second event; around an
+    unpicked one (TauP only) dt is not trained."""
+    t = token_targets(200, 10, p_sample=205, tolerance_samples=0, sample_rate=FS, max_dt_s=10,
+                      later=[(605, 50, True), (1405, 100, False)],
+                      mask_before_samples=100, mask_after_samples=1000)
+    ends = np.arange(200) * 10 + 9
+    assert (t["y"][ends >= 205] == 1).all()
+    assert t["dt"][ends == 699][0] == pytest.approx(0.94)          # restarted at 605
+    assert (t["dt_mask"][np.abs(ends - 605) < 50] == 0).all()
+    masked = (ends >= 1405 - 200) & (ends < 1405 + 1100)
+    assert (t["dt_mask"][masked] == 0).all()
+    assert (t["dt_mask"][(ends >= 700) & (ends < 1405 - 200)] == 1).all()
+
+
+def test_later_onsets_round_trip():
+    from onset.later import decode, encode
+    got = decode(encode([(3712.4, 0.5, "a"), (5000.0, 1.0, "m")]))
+    assert got == [(3712.4, 0.5, "a"), (5000.0, 1.0, "m")]
+    assert decode(float("nan")) == [] and encode([]) is None
+
+
+def test_dataset_moves_later_onsets_with_p(tmp_path):
+    """A stored trace's own later onsets follow P through the splice, and the
+    picked ones are carried for evaluation."""
+    from onset.data import OnsetDataset
+    rng = np.random.default_rng(5)
+    w = StoreWriter(tmp_path)
+    sta = next(s for s in (f"S{i}" for i in range(100)) if station_split("XX", s) == "train")
+    base = {"split": "train", "source": "fdsn", "network": "XX", "station": sta}
+    w.add("context/1/XX.S", rng.normal(0, 1, (12000, 3)).astype(np.float32),
+          np.zeros(12000, bool), {**base, "kind": "context"})
+    ev = rng.normal(0, 1, (6000, 3)).astype(np.float32)
+    ev[700:] *= 20
+    ev[3700:] *= 5
+    w.add("event/1/XX.S", ev, np.zeros(6000, bool),
+          {**base, "kind": "event", "p_sample": 700.0, "p_source": "aic", "p_tolerance_s": 0.3,
+           "context_key": "context/1/XX.S", "later_p": "3700.0:0.5:a;5000.0:1:m"})
+    w.close()
+    for lead in (0.0, 40.0):
+        ds = OnsetDataset(tmp_path, "train", DataConfig(eval_lead_in_s=lead, eval_second_every=0),
+                          ModelConfig(), False)
+        b = ds[0]
+        p_s = float(b["p_s"])
+        later = [v for v in b["later_s"].tolist() if np.isfinite(v)]
+        assert later == [pytest.approx(p_s + 30.0)]
+        ends = (np.arange(len(b["y"])) * 10 + 9) / FS
+        k = np.flatnonzero(ends >= p_s + 31.0)[0]
+        assert float(b["dt"][k]) == pytest.approx(ends[k] - (p_s + 30.0), abs=1e-4)
+        assert (b["dt_mask"].numpy()[(ends >= p_s + 43.0) & (ends < p_s + 53.0)] == 0).all()
+
+
+def test_sweep_scores_later_onsets():
+    stride, n = 10, 600
+    p = np.zeros(n)
+    p[100:] = 0.99
+    dt = np.minimum(10.0, np.maximum(0.0, 0.1 * (np.arange(n) - 100)))
+    dt[400:] = np.minimum(10.0, 0.1 * np.arange(200))  # restart at 40 s
+    e = {"p": p, "dt": dt, "p_s": 10.0, "tol_s": 0.3, "later_s": [40.0]}
+    row = metrics.sweep([e], [], stride, FS, thresholds=[0.9], rule=metrics.TriggerRule())[0]
+    assert row["later_n"] == 1 and row["later_recall@1.0s"] == 1.0
+
+
 def token_trigger_reference(p, dt, thr, rel, below, frm, ntok):
     """Token by token, as ayzek's src/pipeline/trigger.hpp."""
     out, armed, peak, low = [], True, 0.0, 0

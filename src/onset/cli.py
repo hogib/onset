@@ -8,6 +8,8 @@ COMMANDS = {
     "build-stead": ("onset.build_stead", "build", "STEAD chunks -> dataset store (fallback)"),
     "validate-aic": ("onset.build_stead", "validate_aic",
                      "measure the AIC P refinement against STEAD manual picks"),
+    "label-later": ("onset.later", "main",
+                    "label catalogued arrivals in event traces' codas, in place"),
     "train": ("onset.train", "main", "train the detector"),
     "evaluate": ("onset.evaluate", "main", "latency and false triggers on a split"),
     "replay": ("onset.replay", "main", "run a trained detector over continuous miniSEED"),

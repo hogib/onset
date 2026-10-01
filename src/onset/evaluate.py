@@ -67,6 +67,7 @@ def predict(model: OnsetDetector, ds: OnsetDataset, device, batch_size=64, worke
                 events.append({**item, "p_s": float(b["p_s"][k]), "tol_s": float(b["tol_s"][k]),
                                "dist_km": float(b["dist_km"][k]),
                                "s_s": float(b["s_s"][k]), "p2_s": float(b["p2_s"][k]),
+                               "later_s": [v for v in b["later_s"][k].tolist() if np.isfinite(v)],
                                "tol2_s": float(b["tol2_s"][k])})
             else:
                 noise.append(item)
@@ -109,6 +110,9 @@ def print_summary(title: str, s: dict, n_events: int, noise_hours: float):
         if s.get("second_dt_min_p50") == s.get("second_dt_min_p50"):  # not NaN
             print(f"    lowest dt within {metrics.SECOND_DT_WINDOW_S:g} s of their P: median "
                   f"{s['second_dt_min_p50']:.2f} s (the restart needs it at or below its level)")
+    if s.get("later_n"):
+        print(f"  catalogued onsets in the coda ({s['later_n']}, real): recall  "
+              + "  ".join(f"≤{d:g}s {s[f'later_recall@{d}s']:.1%}" for d in metrics.DELAYS_S))
     print(f"  median latency {s['latency_p50_s']:.2f} s   "
           f"median onset error from dt {s['onset_abs_err_p50_s']:.2f} s")
 

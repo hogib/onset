@@ -28,7 +28,7 @@ COLUMNS = [
     "missing_fraction", "p_sample", "p_source", "p_tolerance_s",
     "p_predicted_sample", "s_sample", "pick_snr", "context_key",
     "station_lat", "station_lon", "event_lat", "event_lon", "components",
-    "back_azimuth_deg",
+    "back_azimuth_deg", "later_p",
 ]
 KINDS = ("event", "noise", "context")
 

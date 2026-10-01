@@ -26,7 +26,9 @@ def token_targets(n_tokens: int, stride: int, p_sample: float | None,
                   pre_samples: float = 0, pre_weight: float = 1.0,
                   second_sample: float | None = None,
                   second_tolerance_samples: float = 0,
-                  second_dt_samples: float = 0, second_dt_weight: float = 1.0) -> dict:
+                  second_dt_samples: float = 0, second_dt_weight: float = 1.0,
+                  later=(), mask_before_samples: float = 0,
+                  mask_after_samples: float = 0) -> dict:
     """Targets for one trace.
 
     `second_sample` is the P of a second event inside the first one's coda
@@ -36,6 +38,13 @@ def token_targets(n_tokens: int, stride: int, p_sample: float | None,
     of the `second_dt_samples` after it is weighted `second_dt_weight`: the
     restart is what the trigger fires on, and it is a few tokens against a
     coda of many.
+
+    `later` holds the trace's own catalogued onsets after P (later.py), as
+    (sample, tolerance samples, labelled). A labelled one is treated as a
+    second event: dt restarts there, with the same up-weighting. An unlabelled
+    one is only a TauP prediction: dt is not trained from
+    `mask_before_samples` before it to `mask_after_samples` after, the span
+    in which dt depends on where the onset really was.
 
     Returns:
         dict of (n_tokens,) float32 arrays: `y` (0/1), `w` (loss weight),
@@ -60,12 +69,21 @@ def token_targets(n_tokens: int, stride: int, p_sample: float | None,
     w[unsure] = 0.0
     dt[after] = np.minimum(rel[after] / sample_rate, max_dt_s)
     dt_mask[after & ~unsure] = 1.0
+    restarts = [(s, tol) for s, tol, labelled in later if labelled and s > p_sample]
     if second_sample is not None and np.isfinite(second_sample):
-        rel2 = ends - second_sample
+        restarts.append((second_sample, second_tolerance_samples))
+    for s2, tol2 in sorted(restarts):               # in order: dt counts from the latest
+        rel2 = ends - s2
         after2 = rel2 >= 0
         dt[after2] = np.minimum(rel2[after2] / sample_rate, max_dt_s)
-        dt_mask[np.abs(rel2) < second_tolerance_samples] = 0.0
-        dt_w[after2 & (rel2 < second_tolerance_samples + second_dt_samples)] = second_dt_weight
+        dt_w[after2 & (rel2 < tol2 + second_dt_samples)] = second_dt_weight
+    for s2, tol2 in restarts:
+        dt_mask[np.abs(ends - s2) < tol2] = 0.0
+    for s2, tol2, labelled in later:
+        if not labelled and s2 > p_sample:
+            rel2 = ends - s2
+            dt_mask[(rel2 >= -(tol2 + mask_before_samples))
+                    & (rel2 < tol2 + mask_after_samples)] = 0.0
     return {"y": y, "w": w, "dt": dt, "dt_mask": dt_mask, "dt_w": dt_w}
 
 

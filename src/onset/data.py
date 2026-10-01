@@ -60,7 +60,11 @@ from torch.utils.data import Dataset
 from onset.conditioning import channel_scale, condition
 from onset.config import DataConfig, ModelConfig
 from onset.labels import token_targets
+from onset.later import decode
 from onset.store import StoreReader
+
+
+MAX_LATER = 4                  # picked later onsets carried per example
 
 
 class OnsetDataset(Dataset):
@@ -75,8 +79,12 @@ class OnsetDataset(Dataset):
         # split-disjoint, so these never cross a split.
         pool = idx[idx.kind.isin(("noise", "context"))]
         self.pool = {k: g["key"].tolist() for k, g in pool.groupby(["network", "station"])}
-        # Second-event sources: the split's event traces, by station.
+        # Second-event sources: the split's event traces, by station; not ones
+        # with a catalogued onset of their own after P, which would come along
+        # unlabelled.
         ev = idx[(idx.split == split) & (idx.kind == "event") & idx.p_sample.notna()]
+        if "later_p" in ev:
+            ev = ev[ev.later_p.isna()]
         self.events = ev.reset_index(drop=True)
         self.events_by_station = {k: g.index.tolist()
                                   for k, g in self.events.groupby(["network", "station"])}
@@ -236,6 +244,8 @@ class OnsetDataset(Dataset):
         r = self.rows.iloc[i]
         wave, missing = self.store.read(r.key)
         p = float(r.p_sample) if r.kind == "event" and pd.notna(r.p_sample) else None
+        later = decode(r.get("later_p")) if p is not None else []
+        p_stored = p
         ctx = self._context(r.context_key)
         if self.train:
             if self.rng.random() < self.data.lead_in_p:
@@ -251,6 +261,9 @@ class OnsetDataset(Dataset):
         a, b = self._crop(len(wave), p)
         wave, missing = wave[a:b].copy(), missing[a:b].copy()
         p_local = None if p is None else p - a
+        # The trace's own later onsets, moved like P by the splice and the crop.
+        later = [(s + (p - p_stored) - a, tol * self.fs, k == "a") for s, tol, k in later
+                 if 0 <= s + (p - p_stored) - a < b - a] if p is not None else []
         p2, tol2 = None, 0.0
         if p_local is not None:
             if self.train and self.rng.random() < self.data.second_p:
@@ -285,12 +298,16 @@ class OnsetDataset(Dataset):
                           self.data.early_s * self.fs, self.data.early_weight,
                           self.data.pre_s * self.fs, self.data.pre_weight,
                           p2, tol2, self.data.second_dt_s * self.fs,
-                          self.data.second_dt_weight)
-        # Geometry is the first event's; after the second P it is not.
+                          self.data.second_dt_weight, later,
+                          self.data.later_mask_before_s * self.fs,
+                          self.model.max_dt_s * self.fs)
+        # Geometry is the first event's; after the next onset it is not.
         t["geo_mask"] = t["dt_mask"].copy()
-        if p2 is not None:
+        nxt = [p2 - tol2] if p2 is not None else []
+        nxt += [s - tol - self.data.later_mask_before_s * self.fs for s, tol, _ in later]
+        if nxt:
             ends = np.arange(len(t["y"])) * self.stride + self.stride - 1
-            t["geo_mask"][ends >= p2 - tol2] = 0.0
+            t["geo_mask"][ends >= min(nxt)] = 0.0
         return {"x": torch.from_numpy(x), "ctx": torch.from_numpy(c),
                 "has_ctx": torch.tensor(has),
                 **{k: torch.from_numpy(v) for k, v in t.items()},
@@ -303,6 +320,9 @@ class OnsetDataset(Dataset):
                                         and pd.notna(r.get("distance_km")) else np.nan),
                 "s_s": torch.tensor(self._s_local(r, p, p_local)),
                 "p2_s": torch.tensor(np.nan if p2 is None else p2 / self.fs),
+                # Picked later onsets, for evaluation: local seconds, NaN-padded.
+                "later_s": torch.tensor((sorted(s / self.fs for s, _, ok in later if ok)
+                                         + [np.nan] * MAX_LATER)[:MAX_LATER]),
                 "tol2_s": torch.tensor(tol2 / self.fs),
                 "n_tokens": torch.tensor(len(x) // self.stride)}
 

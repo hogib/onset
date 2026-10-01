@@ -48,6 +48,7 @@ from onset.catalog import (S_PHASES, VISIBILITY, Catalog, TravelTimes,
 from onset.config import SAMPLE_RATE
 from onset.dsp import filter_components
 from onset.labels import refine_p
+from onset.later import encode, later_onsets
 from onset.store import StoreWriter, station_split
 
 BANDS = ("HH", "BH", "EH")
@@ -270,11 +271,14 @@ def process_file(path: Path):
         else:
             drops["context_absent"] += 1
 
+        # Catalogued arrivals after this P: onsets in its coda (later.py).
+        later = later_onsets(cat, taup, lat, lon, ev.event_id, float(t0.timestamp), fs,
+                             wave[:, 0], missing, pick, s_pred)
         records.append((f"event/{ev.event_id}/{net}.{sta}", wave, missing, {
             **base, "kind": "event", "start_time": str(t0), "p_sample": pick,
             "p_source": source, "p_tolerance_s": TOLERANCE_S[source],
             "p_predicted_sample": p_pred, "s_sample": s_pred, "pick_snr": snr,
-            "context_key": ctx_key}))
+            "context_key": ctx_key, "later_p": encode(later)}))
 
         if (net, sta) in side["noise"]:
             got = _clean_tail(side["noise"][(net, sta)], cfg["noise_seconds"],

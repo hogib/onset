@@ -104,6 +104,11 @@ class DataConfig:
     second_dt_s: float = 3.0             # dt loss up-weighted over this long after its P ...
     second_dt_weight: float = 5.0        # ... by this factor
     eval_second_every: int = 4           # evaluation: every Nth event trace gets one; 0 none
+    # Catalogued onsets in a trace's own coda (later.py, the store's later_p):
+    # picked ones are labelled like a second event; around unpicked ones dt is
+    # not trained from this long before the TauP prediction to max_dt_s after
+    # (plus its tolerance), where dt depends on where the onset really was.
+    later_mask_before_s: float = 1.0
 
 
 @dataclass
