@@ -66,7 +66,7 @@ class TriggerRule:
     below: float = 2.0          # dt at or below this is a restart ...
     frm: float = 5.0            # ... once dt had reached this since the last trigger
     tokens: int = 2             # ... for this many tokens in a row
-    min_gap_s: float = 15.0     # between the P dates (t - dt) of two triggers
+    min_gap_s: float = 5.0      # between the P dates (t - dt) of two triggers
     max_dt: float = 10.0
 
     @classmethod

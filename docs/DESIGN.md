@@ -222,7 +222,9 @@ stay as they are.
 **The trigger is ayzek's.** Latency and false triggers are counted with the
 trigger ayzek runs (`metrics.TriggerRule`, from `TrainConfig.dt_reset*` and
 `min_trigger_gap_s`): a rising edge, or a restart of dt while p stays high,
-and no trigger whose P date is within 15 s of the last one. Every 4th
+and no trigger whose P date is within 5 s of the last one (15 s before:
+the restart already waits for dt to reach 5 s, and the longer gap only
+dropped aftershocks 5–15 s behind the last event). Every 4th
 validation event (`eval_second_every`) carries a second event in its coda at
 a fixed draw, scored on its own ("second onsets"). The restart level is
 1 s (`dt_reset_below`): once second onsets were trained harder, dt fell to

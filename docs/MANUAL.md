@@ -248,7 +248,7 @@ uv run --extra build onset replay runs/fdsn_v2 \
 - `<NET.STA>_triggers.csv`: each trigger's time, p and dated onset, and whether
   it matched a catalogued arrival; with the geometry head, its distance at
   the trigger and 10 s later. Triggers follow ayzek's rule
-  (rising edge or dt restart, 15 s apart).
+  (rising edge or dt restart, 5 s apart).
 - `summary.json`: per station, the hours scored, triggers, context refreshes,
   detections and latency.
 
@@ -304,7 +304,7 @@ epoch 5  loss 0.1141 (bce 0.1045 dt 0.096)  val recall@1s 0.462 @thr 0.99000 (0.
   trigger misses it.
 - `score`: recall within 1 s over first and second onsets together. It decides
   `best.pt`. Triggers are counted with ayzek's rule (rising edge or dt
-  restart, 15 s apart between P dates).
+  restart, 5 s apart between P dates).
 - `@thr … (FA/h)`: that threshold, and its false triggers per hour. It is
   the lowest threshold within the budget, found by bisection between grid
   steps: outputs crowd against 1, where one grid step moves recall by tens of
