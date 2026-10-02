@@ -109,7 +109,7 @@ event carries a total weight of one, shared equally among its stations, so
 that the many stations of a well-recorded event do not dominate the fit.
 The fit uses the events of M 2 or more in the train split.
 
-### 3.2 Channels that do not record
+### 3.2 Channels that do not record, and values inside a coda
 
 A vertical channel that has failed, or that records far less ground motion
 than its response states, reports every value as censored. Each such value
@@ -125,6 +125,16 @@ it records. On the replay of the 2025-04-23 Marmara sequence in ayzek, the
 vertical channel of MRMT records 25 times less noise than its median. With
 that channel included, the estimate of the Mw 6.2 mainshock was M 5.5; with
 it excluded, M 6.0 (ayzek's `docs/impl/17-pd-magnitude.md`).
+
+The converse case is a value whose pre-P noise lies far above the station's
+median. Such a value was measured inside the coda of another event, and the
+peak after P includes that coda. On the same replay, the aftershocks of the
+mainshock whose estimates were 0.4 to 1.1 units too high had been measured at
+13 to 340 times their stations' median noise level, the well-estimated
+events at about the median. A value more than a factor of 10 above its
+station's median is therefore also excluded (`runs/pd_v6`). On the stored
+traces, 1.4% of the values lie above that factor; the refit changes no test
+result in the tables below by more than 0.01, which are those of `runs/pd_v5`.
 
 ### 3.3 Event magnitude
 
@@ -297,13 +307,13 @@ inside the coda of a larger event.
 
 ```bash
 uv run --extra build onset measure-pd --data datasets/fdsn_wide_x           # -> datasets/fdsn_wide_x/pd.csv
-uv run --extra build onset fit-pd --pd datasets/fdsn_wide_x/pd.csv --out runs/pd_v5
+uv run --extra build onset fit-pd --pd datasets/fdsn_wide_x/pd.csv --out runs/pd_v6
 R=$ONSET_FDSN_ROOT/raw/data/batched_waveforms
 uv run --extra build onset pd-replay $R/day_before_24h/event_543430_raw.mseed \
-    $R/window_post_60s/event_543430_raw.mseed --fit runs/pd_v5/fit.json
+    $R/window_post_60s/event_543430_raw.mseed --fit runs/pd_v6/fit.json
 ```
 
-`runs/pd_v5/fit.json` holds the coefficients, station terms and b-value
+`runs/pd_v6/fit.json` holds the coefficients, station terms and b-value
 for every window, in the form that ayzek's export reads. `eval.csv` holds
 the evaluation of section 6, and `calibration.csv` the calibration of
 section 5.
