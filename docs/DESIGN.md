@@ -6,7 +6,9 @@ the first of three stages: detector, then a noise/P/S picker, then a
 magnitude regressor. Only the detector is built here; ayzek supplies the
 other two. With the geometry head (`ModelConfig.geometry`) the detector also
 says how far away the event is, which ayzek uses to locate events without
-the picker (§6).
+the picker (§6). Magnitude is estimated outside the network, from the peak
+displacement of the P wave on the raw vertical component and the distance
+that the geometry head supplies (`docs/MAGNITUDE.md`).
 
 The deployment target is ayzek (C++23, hand-written inference, Raspberry Pi).
 Everything below is chosen so that the model can be transcribed there and
@@ -331,9 +333,11 @@ ayzek's `docs/impl/15-geometry-location.md`.
 - **No human-reviewed noise.** Noise windows are the `noise_pre_6h` pulls minus
   any window a visible catalogued arrival touches. Uncatalogued micro-events
   remain in them as label noise.
-- **The picker and the magnitude regressor** are the next stages. The dt head
-  exists to hand the picker its window. With the geometry head, location no
-  longer needs the picker (§6).
+- **The picker** is the next stage. The dt head exists to hand the picker
+  its window. With the geometry head, location no longer needs the picker
+  (§6), and with the Pd relation of `docs/MAGNITUDE.md` neither does the
+  first magnitude estimate, although that estimate saturates for events
+  whose rupture outlasts the 10 s window.
 - **The geometry head's uncertainties are the location's weights.** They are
   only as good as their calibration (`cal_1sd` in the evaluate geometry
   table, 0.68 when honest); an overconfident station pulls the location

@@ -157,6 +157,23 @@ uv run --extra build onset build-stead --out datasets/stead_v1 --max-traces 1000
 STEAD only reads chunks whose `.csv` and `.hdf5` are both extracted. Use
 `7z x chunkN.zip`, not unzip. `chunk5.zip` on disk is a broken download.
 
+**Magnitude (Pd) calibration** (`docs/MAGNITUDE.md`):
+
+```bash
+uv run --extra build onset measure-pd --data datasets/fdsn_wide_x     # Pd of every event trace -> pd.csv
+uv run --extra build onset fit-pd --pd datasets/fdsn_wide_x/pd.csv --out runs/pd_v4
+uv run --extra build onset pd-replay day.mseed event.mseed --fit runs/pd_v4/fit.json
+```
+
+- `measure-pd` reads the raw event pulls named in the store's `build.json`
+  and the StationXML responses in `$ONSET_FDSN_ROOT/raw/data/station_inventory`.
+- `fit-pd` prints, for every window, the fitted relation, the stations whose
+  terms suggest a response error, and the test-split errors by magnitude band
+  for the adopted estimator and three alternatives. It writes `fit.json`
+  (read by ayzek's export), `eval.csv` and `calibration.csv`.
+- `pd-replay` estimates the magnitude of every catalogued event of M 4.5 or
+  more in a continuous recording, window by window, and flags clipped values.
+
 ## 3. Train
 
 ```bash

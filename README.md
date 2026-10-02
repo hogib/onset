@@ -9,6 +9,8 @@ so a phase picker gets the right window without delay.
 - `docs/DESIGN.md`: the architecture and the reasons behind it.
 - `docs/DATA.md`: the sources, the labels, and how good the labels are.
 - `docs/MANUAL.md`: how to use the tooling here and in ayzek, command by command.
+- `docs/MAGNITUDE.md`: magnitude from peak P-wave displacement: measurement,
+  calibration and evaluation.
 
 It is built to be transcribed into ayzek (`../ayzek/ayzek_code`, C++23,
 hand-written inference). `stream.StreamingDetector` is the reference algorithm
@@ -63,4 +65,6 @@ See `docs/DATA.md`.
 | `data.py` | crops, lead-in, gaps, context -> examples |
 | `metrics.py` | latency, early triggers, false triggers per hour, threshold sweep |
 | `locate.py` | a network location from the geometry head's per-station distance and the P times; the reference for ayzek's locator |
+| `later.py` | catalogued onsets in an event trace's own coda (`later_p`) |
+| `pd.py`, `pd_fit.py`, `pd_replay.py` | peak P displacement, the censored Pd–M–R relation and its evaluation, and the check on a continuous recording (`docs/MAGNITUDE.md`) |
 | `train.py`, `evaluate.py`, `replay.py`, `cli.py` | the commands |
