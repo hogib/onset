@@ -265,6 +265,31 @@ rule the checkpoint was selected with. With `--dt-reset 0
 --eval-second-every 0 --min-trigger-gap-s 0`, validation is what it was
 before.
 
+**Timing needs a refined label, and splits are weighted by station.** The
+recall within 1 s is judged against the labelled P. For a trace whose AIC
+refinement was rejected, that P is the bare TauP prediction, which runs about
+0.9 s early on the KOERI network, so a detection at the true P counts as
+late; on such traces recall within 1 s is 2–3% in every split. The share of
+these traces depends on the station's noise (the refinement is rejected at
+low SNR), and so do the splits, which are station-disjoint and, in
+`fdsn_wide_x`, dominated by single stations (TVSB is 61% of the validation
+split's refined-label traces). Evaluation therefore also reports the recall
+of first onsets with a refined label, and its mean over stations:
+
+| `runs/fdsn_sp_later_1`, first onsets within 1 s | validation (8 stations) | test (17 stations) |
+|---|---:|---:|
+| all labels, by trace | 76.6% | 58.3% |
+| refined labels, by trace | 88.8% | 82.6% |
+| refined labels, mean over stations | 80.3% | 82.1% |
+| traces with a TauP-only label | 14% | 30% |
+
+The 18-point gap between the splits in the first row is a matter of label
+precision and station composition; by the last row the test stations are
+not harder than the validation stations. Model selection still uses the first
+row; a station-averaged score on refined labels would be the better
+criterion, and the validation split is too concentrated on one station to
+rank checkpoints reliably.
+
 Both are swept over the threshold. The **operating point** is the lowest
 threshold that keeps noise within `fa_target_per_hour` (default 1 per station
 per hour). **Model selection** takes the checkpoint with the best recall within

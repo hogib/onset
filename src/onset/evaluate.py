@@ -108,6 +108,9 @@ def print_summary(title: str, s: dict, n_events: int, noise_hours: float):
           f"early (pre-P) triggers on events {s['early_rate']:.1%}")
     print("  recall  " + "  ".join(f"≤{d:g}s {s[f'recall@{d}s']:.1%}" for d in metrics.DELAYS_S)
           + f"   ever {s['detected']:.1%}")
+    if s.get("precise_n"):
+        print(f"    with a refined (AIC) P label ({s['precise_n']}): recall  "
+              + "  ".join(f"≤{d:g}s {s[f'precise_recall@{d}s']:.1%}" for d in metrics.DELAYS_S))
     if s.get("second_n"):
         print(f"  second onsets in the coda ({s['second_n']}): recall  "
               + "  ".join(f"≤{d:g}s {s[f'second_recall@{d}s']:.1%}" for d in metrics.DELAYS_S)
@@ -197,6 +200,14 @@ def main(argv=None):
             n=("key", "size"), recall_1s=("latency_s", lambda v: (v <= 1).mean()),
             latency_p50=("latency_s", "median"))
         print("\n  by label source\n" + by_src.round(3).to_string())
+        # Every station weighs the same: a split dominated by one station (TVSB
+        # holds 54% of fdsn_wide_x's validation traces) otherwise reports that
+        # station. Refined labels only, as above.
+        st = table[table.p_source != "taup"].groupby("station").agg(
+            n=("key", "size"), recall_1s=("latency_s", lambda v: (v <= 1).mean()))
+        print(f"\n  by station, refined labels: mean of the stations' recall within 1 s "
+              f"{st.recall_1s.mean():.1%} over {len(st)} stations "
+              f"(largest station {st.n.max() / max(1, st.n.sum()):.0%} of the traces)")
     out = Path(a.run_dir)
     (out / f"eval_{name}.json").write_text(json.dumps(
         {"summary": s, "sweep": rows, "n_events": len(events), "noise_hours": hours,

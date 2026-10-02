@@ -32,6 +32,10 @@ import numpy as np
 DELAYS_S = (0.25, 0.5, 1.0, 2.0, 4.0)
 SECOND_DT_WINDOW_S = 3.0      # second onsets: the lowest dt in this long after their P
 LATER_TOL_S = 0.5             # a trace's own picked onsets after P (later.py)
+# First onsets whose P is a refined pick (AIC, 0.3 s; manual, 0.1 s) rather than a
+# bare TauP prediction (1.0 s), which runs ~0.9 s early on KOERI: recall "within
+# 1 s" can only be judged against the former.
+PRECISE_TOL_S = 0.35
 # Even steps in logit, not probability. Without label smoothing a trained
 # model's outputs crowd against 1, and a grid in probability steps from 0.990
 # to 0.995 in one move -- measured, recall within 1 s fell from 46% to 0.3%
@@ -195,6 +199,7 @@ def sweep(events: list[dict], noise: list[dict], stride: int, fs: float,
                 if w2.any():
                     dtmin2.append(float(np.min(e["dt"][w2])))
         lat, lat2, lat3 = np.asarray(lat), np.asarray(lat2), np.asarray(lat3)
+        precise = np.array([e["tol_s"] <= PRECISE_TOL_S for e in events], bool)
         fa = sum(len(trigger_tokens(n["p"], n.get("dt", np.zeros_like(n["p"])), thr, release,
                                     stride, fs, rule, n.get("fresh"))) for n in noise)
         row = {"threshold": float(thr),
@@ -208,6 +213,9 @@ def sweep(events: list[dict], noise: list[dict], stride: int, fs: float,
             row[f"recall@{d}s"] = float(np.mean(lat <= d)) if events else np.nan
             row[f"second_recall@{d}s"] = float(np.mean(lat2 <= d)) if len(lat2) else np.nan
             row[f"later_recall@{d}s"] = float(np.mean(lat3 <= d)) if len(lat3) else np.nan
+            row[f"precise_recall@{d}s"] = (float(np.mean(lat[precise] <= d))
+                                           if precise.any() else np.nan)
+        row["precise_n"] = int(precise.sum())
         row["second_n"] = len(lat2)
         row["later_n"] = len(lat3)
         # How far dt comes down at a second onset: the trigger needs 2 s.

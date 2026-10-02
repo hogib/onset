@@ -172,3 +172,21 @@ def test_a_channel_that_does_not_record_is_left_out():
     f["station_noise"] = {}                                   # without the guard
     biased = pd_fit.estimate_censored(pd.DataFrame(rows), f)
     assert biased.est.iloc[0] < m - 0.3
+
+
+def test_a_value_inside_a_coda_is_left_out():
+    """A value whose noise lies far above its station's median was measured in
+    another event's coda; its inflated peak would push the estimate up."""
+    f = {"tau_s": 3.0, "alpha": ALPHA, "beta": [BETA], "m_knots": [], "gamma": [GAMMA],
+         "knots_km": [], "sigma": 0.3, "station": {}, "b_value": 0.0,
+         "station_noise": {"A": 1e-7, "B": 1e-7, "CODA": 1e-7}}
+    m = 4.0
+    lp = lambda d: ALPHA + BETA * m + GAMMA * pd_fit.log_r(d)
+    rows = [{"event_id": 0, "station": s, "distance_km": 40.0, "magnitude": m,
+             "pd_noise": 1e-7, "pd_3s": 10 ** lp(40.0)} for s in ("A", "B")]
+    rows.append({"event_id": 0, "station": "CODA", "distance_km": 40.0, "magnitude": m,
+                 "pd_noise": 1e-4, "pd_3s": 50 * 10 ** lp(40.0)})   # 1000x its median
+    est = pd_fit.estimate_censored(pd.DataFrame(rows), f)
+    assert est.est.iloc[0] == pytest.approx(m, abs=0.05)
+    f["station_noise"] = {}
+    assert pd_fit.estimate_censored(pd.DataFrame(rows), f).est.iloc[0] > m + 0.3

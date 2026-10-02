@@ -718,3 +718,17 @@ def test_the_dt_bin_head_trains(store):
     assert loss > without
     loss.backward()
     assert torch.isfinite(loss)
+
+
+def test_recall_on_refined_labels_leaves_out_taup_labels():
+    """A TauP label (tolerance 1 s) cannot support timing within 1 s; the
+    refined-label recall counts only events with an AIC or manual P."""
+    stride, n = 10, 400
+    p = np.zeros(n)
+    p[100:] = 0.99
+    dt = np.minimum(10.0, np.maximum(0.0, 0.1 * (np.arange(n) - 100)))
+    aic = {"p": p, "dt": dt, "p_s": 10.0, "tol_s": 0.3}
+    taup = {"p": p, "dt": dt, "p_s": 8.5, "tol_s": 1.0}        # labelled 1.5 s early
+    row = metrics.sweep([aic, taup], [], stride, FS, thresholds=[0.9])[0]
+    assert row["recall@1.0s"] == 0.5
+    assert row["precise_n"] == 1 and row["precise_recall@1.0s"] == 1.0
