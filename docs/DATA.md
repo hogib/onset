@@ -142,6 +142,25 @@ not used as sources for synthetic second events, whose own coda onsets would
 come along unlabelled. The catalogue misses small events, so this labels the
 catalogued part of the problem only.
 
+**Effect on training.** A model trained with these labels
+(`runs/fdsn_sp_later_1`) was compared with the same configuration trained
+without them (`runs/fdsn_sp_1`), both evaluated with the 5 s trigger gap
+(`runs/fdsn_sp_1_gap5` is `fdsn_sp_1` with only the gap changed). No
+difference exceeds the variation between training runs:
+
+| test split | without | with |
+|---|---:|---:|
+| first onsets within 1 s | 58.0% | 58.3% |
+| synthetic second onsets within 1 s / 4 s | 70.2% / 76.3% | 70.3% / 76.5% |
+| catalogued coda onsets within 1 s / 4 s (419) | 55.6% / 63.0% | 56.3% / 63.2% |
+| false triggers per hour on noise | 1.00 | 1.00 |
+
+The validation split gives the same picture (first onsets 75.9% against
+76.6%; catalogued coda onsets 63.5% against 63.3%). The labels reach only
+1.7% of the event traces within a training crop's span, which is consistent
+with an effect too small to measure. They are retained because they are
+correct, and because they provide the evaluation on real coda onsets.
+
 ## STEAD (fallback)
 
 ```bash
