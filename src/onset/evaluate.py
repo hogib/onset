@@ -23,7 +23,7 @@ from torch.utils.data import DataLoader
 from onset import metrics
 from onset.config import DataConfig, ModelConfig, load_run_config
 from onset.data import OnsetDataset, pad_collate
-from onset.model import OnsetDetector
+from onset.model import OnsetDetector, fresh_probability
 
 
 def length_batches(ds: OnsetDataset, batch_size: int) -> list[list[int]]:
@@ -50,6 +50,8 @@ def predict(model: OnsetDetector, ds: OnsetDataset, device, batch_size=64, worke
             out = model(b["x"].to(device), b["ctx"].to(device), b["has_ctx"].to(device))
         p = torch.sigmoid(out["logit"].float()).cpu().numpy()
         dt = out["dt"].float().cpu().numpy()
+        fresh = (fresh_probability(out["dt_logits"]).cpu().numpy()
+                 if "dt_logits" in out else None)
         geo = None
         if "log_dist" in out:
             geo = {"log_dist": out["log_dist"].float().cpu().numpy(),
@@ -61,6 +63,8 @@ def predict(model: OnsetDetector, ds: OnsetDataset, device, batch_size=64, worke
             n = int(b["n_tokens"][k])
             item = {"p": p[k, :n], "dt": dt[k, :n], "missing_tokens": miss[k, :n],
                     "index": int(b["index"][k]), "has_ctx": bool(b["has_ctx"][k])}
+            if fresh is not None:
+                item["fresh"] = fresh[k, :n]
             if geo is not None:
                 item.update({g: v[k, :n] for g, v in geo.items()})
             if bool(b["is_event"][k]):
@@ -78,7 +82,8 @@ def per_trace(events, ds, stride, fs, thr, release_ratio=0.5, rule=None) -> pd.D
     rows = []
     for e in events:
         lat, early, onset = metrics.score_event(e["p"], e["dt"], e["p_s"], e["tol_s"],
-                                                stride, fs, thr, thr * release_ratio, rule)
+                                                stride, fs, thr, thr * release_ratio, rule,
+                                                e.get("fresh"))
         r = ds.rows.iloc[e["index"]]
         rows.append({"key": r.key, "station": r.station, "magnitude": r.magnitude,
                      "distance_km": r.distance_km, "p_source": r.p_source,
@@ -139,6 +144,9 @@ def main(argv=None):
                    help="False triggers per hour; defaults to the run's own.")
     p.add_argument("--no-context", action="store_true",
                    help="Score as a station with no baseline yet.")
+    p.add_argument("--restart-curve", action="store_true",
+                   help="Also sweep the restart rule's knob at the operating threshold: "
+                        "coda onsets caught against coda triggers (metrics.restart_curve).")
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--workers", type=int, default=4)
     a = p.parse_args(argv)
@@ -160,6 +168,23 @@ def main(argv=None):
     print_summary(f"{a.run_dir} on {name}", s, len(events), hours)
     geo_rows = metrics.geometry_table(events, mcfg.stride, mcfg.sample_rate)
     print_geometry(geo_rows)
+    curve = []
+    if a.restart_curve:
+        level = metrics.replace_rule(rule, fresh_prob=0.0)
+        curve = metrics.restart_curve(events, mcfg.stride, mcfg.sample_rate, s["threshold"],
+                                      level, "below", (0.5, 0.75, 1.0, 1.5, 2.0, 3.0))
+        if any("fresh" in e for e in events):
+            curve += metrics.restart_curve(events, mcfg.stride, mcfg.sample_rate, s["threshold"],
+                                           rule, "fresh_prob",
+                                           (0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9))
+        print("\n  restart rule at the operating threshold: coda onsets caught against "
+              "coda triggers matching no onset")
+        print(f"    {'test':<18} {'onsets':>6} {'<=1 s':>7} {'<=4 s':>7} {'coda trig/100 ev':>17}")
+        for r in curve:
+            name = (f"dt <= {r['value']:g} s" if r["knob"] == "below"
+                    else f"P(dt<1 s) >= {r['value']:g}")
+            print(f"    {name:<18} {r['n_onsets']:>6} {r['recall@1s']:>7.1%} "
+                  f"{r['recall@4s']:>7.1%} {r['coda_triggers_per_100']:>17.1f}")
     table = per_trace(events, ds, mcfg.stride, mcfg.sample_rate, s["threshold"], rule=rule)
     if len(table):
         table["mag_bin"] = pd.cut(table.magnitude, [-9, 2, 3, 4, 5, 10],
@@ -175,7 +200,7 @@ def main(argv=None):
     out = Path(a.run_dir)
     (out / f"eval_{name}.json").write_text(json.dumps(
         {"summary": s, "sweep": rows, "n_events": len(events), "noise_hours": hours,
-         "geometry": geo_rows},
+         "geometry": geo_rows, "restart_curve": curve},
         indent=2, default=float))
     table.to_csv(out / f"eval_{name}.csv", index=False)
     print(f"\n  -> {out / f'eval_{name}.json'}")

@@ -681,3 +681,40 @@ def test_resume_reads_the_saved_state(tmp_path):
                tmp_path / "state.pt")
     st = prepare_out(tmp_path, True, False)
     assert st["epoch"] == 7 and st["step"] == 7000 and st["best"] == 0.5
+
+
+def test_a_fresh_probability_restart_fires_where_dt_stays_above_the_level():
+    """An uncertain restart: dt falls only to 2.5 s, below no level of 1 s,
+    while the dt bins say a fresh onset is likely. The level rule misses it,
+    the probability rule does not."""
+    stride, n = 10, 600
+    p = np.zeros(n)
+    p[100:] = 0.99
+    dt = np.minimum(10.0, np.maximum(0.0, 0.1 * (np.arange(n) - 100)))
+    dt[400:] = np.maximum(2.5, dt[400:] - 8.0)
+    fresh = np.zeros(n)
+    fresh[400:410] = 0.8
+    e = {"p": p, "dt": dt, "fresh": fresh, "p_s": 10.0, "tol_s": 0.3, "later_s": [40.0]}
+    level = metrics.TriggerRule(True, 1.0, 5.0, 2, min_gap_s=5.0)
+    prob = metrics.TriggerRule(True, 1.0, 5.0, 2, min_gap_s=5.0, fresh_prob=0.5)
+    row = lambda r: metrics.sweep([e], [], stride, FS, thresholds=[0.9], rule=r)[0]
+    assert row(level)["later_recall@1.0s"] == 0.0
+    assert row(prob)["later_recall@1.0s"] == 1.0
+    curve = metrics.restart_curve([e], stride, FS, 0.9, prob, "fresh_prob", (0.5, 0.9))
+    assert [c["recall@1s"] for c in curve] == [1.0, 0.0]
+
+
+def test_the_dt_bin_head_trains(store):
+    from torch.utils.data import DataLoader
+    from onset.data import OnsetDataset
+    from onset.model import OnsetDetector
+    from onset.train import loss_fn
+    mc = ModelConfig(d_model=32, n_layers=2, window_tokens=20, dt_bins=1)
+    ds = OnsetDataset(store, "train", DataConfig(seq_seconds=20), mc, True)
+    b = next(iter(DataLoader(ds, batch_size=3)))
+    out = OnsetDetector(mc)(b["x"], b["ctx"], b["has_ctx"])
+    without, _, _ = loss_fn(out, b, 0.1)
+    loss, _, _ = loss_fn(out, b, 0.1, dt_bins_weight=0.2)
+    assert loss > without
+    loss.backward()
+    assert torch.isfinite(loss)

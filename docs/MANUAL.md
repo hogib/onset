@@ -198,6 +198,11 @@ uv run onset train --data datasets/fdsn_v1 --out runs/fdsn_v2
       --lead-in-p 0.9 --ctx-drop 0.3 --fa-target-per-hour 0.5 --epochs 30
   ```
 - **Adding STEAD:** `--fallback datasets/stead_v1 --fallback-weight 0.2`.
+- **dt-bin head (restarts):** `--dt-bins 1`, with `--dt-reset-prob P` for the
+  restart's probability test (P(dt < 1 s) >= P; 0 keeps the dt level test)
+  and `--dt-bins-weight` for its share of the loss (default 0.2). `evaluate
+  --restart-curve` compares the two tests at the operating threshold
+  (docs/DESIGN.md, "An optional third head").
 - **Geometry head (location):** `--geometry 1`, with `--geo-weight` for its
   share of the loss (default 0.1) and `--geo-min-sd` for the smallest
   distance uncertainty it may state (default 0.1, about 10%; without a floor

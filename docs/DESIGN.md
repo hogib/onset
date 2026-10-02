@@ -118,6 +118,28 @@ Evaluation reports how well `t − dt` at the trigger locates P
 (`onset_abs_err_p50_s`). That estimate is what lets the detector place the
 picker's window instead of the "P is 3.5 s into the window" convention.
 
+### An optional third head: the dt bins
+
+The restart that catches an onset in a coda is read from the dt regression
+(dt falls to 1 s or below). A regression can express uncertainty only as an
+intermediate value. When the model is unsure whether a new onset has begun,
+dt falls to 2–3 s, and the level test reads that as no. Moreover, every coda
+token's target is the 10 s cap, which the sigmoid output approaches only
+asymptotically, so the logits of coda tokens keep growing in training, and
+the gradient available to a restart from a confident coda is small.
+
+With `ModelConfig.dt_bins`, a third head gives a distribution over the time
+since the latest onset, on the bins < 0.5, 0.5–1, 1–2, 2–5 and ≥ 5 s
+(`DT_BIN_EDGES_S`). It is trained by cross-entropy on the same tokens and
+with the same weights as the dt regression (`TrainConfig.dt_bins_weight`).
+The coda is the last bin, a finite target, and P(dt < 1 s) states how
+probable a fresh onset is. With `TrainConfig.dt_reset_prob` > 0, the restart
+fires when that probability reaches the threshold, in place of the level
+test. The dt regression remains, and still dates P. `onset evaluate
+--restart-curve` sweeps both tests at the operating threshold and reports,
+for each setting, the recall of onsets in codas against the triggers in
+codas that match no onset, so that the two can be compared at equal cost.
+
 ## 3. Input conditioning
 
 ```

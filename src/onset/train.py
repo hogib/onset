@@ -44,7 +44,7 @@ from onset.config import (DataConfig, ModelConfig, TrainConfig, load_run_config,
                           save_run_config)
 from onset.data import OnsetDataset
 from onset.evaluate import predict, print_geometry, print_summary
-from onset.model import OnsetDetector, count_parameters
+from onset.model import OnsetDetector, count_parameters, dt_bin_targets
 
 
 RUN_FILES = ("history.jsonl", "best.pt", "last.pt", "state.pt", "val_best.json")
@@ -190,7 +190,7 @@ def geometry_loss(out, b):
     return (nll_d * d_ok).sum() / d_ok.sum().clamp_min(1)
 
 
-def loss_fn(out, b, dt_weight, geo_weight=0.0):
+def loss_fn(out, b, dt_weight, geo_weight=0.0, dt_bins_weight=0.0):
     w = b["w"]
     bce = F.binary_cross_entropy_with_logits(out["logit"].float(), b["y"], weight=w,
                                              reduction="sum") / w.sum().clamp_min(1)
@@ -198,6 +198,12 @@ def loss_fn(out, b, dt_weight, geo_weight=0.0):
     dt = (F.smooth_l1_loss(out["dt"].float(), b["dt"], reduction="none") * m).sum() \
         / m.sum().clamp_min(1)
     loss = bce + dt_weight * dt
+    if "dt_logits" in out and dt_bins_weight > 0:
+        # The same tokens and weights as the dt regression: after P, outside
+        # the label tolerance, with the restart up-weighted.
+        ce = F.cross_entropy(out["dt_logits"].float().transpose(1, 2),
+                             dt_bin_targets(b["dt"]), reduction="none")
+        loss = loss + dt_bins_weight * (ce * m).sum() / m.sum().clamp_min(1)
     if "log_dist" in out and geo_weight > 0:
         loss = loss + geo_weight * geometry_loss(out, b)
     return loss, bce, dt
@@ -287,7 +293,7 @@ def main(argv=None):
                 group["lr"] = lr_at(step, tcfg)
             with torch.autocast(device.type, dtype=torch.bfloat16, enabled=amp):
                 o = model(b["x"], b["ctx"], b["has_ctx"])
-            loss, bce, dtl = loss_fn(o, b, tcfg.dt_weight, tcfg.geo_weight)
+            loss, bce, dtl = loss_fn(o, b, tcfg.dt_weight, tcfg.geo_weight, tcfg.dt_bins_weight)
             if not torch.isfinite(loss):
                 raise RuntimeError(f"non-finite loss at step {step}: bce {bce.item()} "
                                    f"dt {dtl.item()}, max|x| {b['x'].abs().max().item():.3g}")

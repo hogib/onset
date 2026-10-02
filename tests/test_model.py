@@ -148,3 +148,20 @@ def test_geometry_uncertainty_has_a_floor():
         m.geo_head.bias[1] = -50.0                # the head trying to state sd ~ 0
         out = m(signal(200)[None])
     assert torch.allclose(out["log_dist_var"].min(), torch.tensor(2 * np.log(0.1), dtype=torch.float32), atol=1e-5)
+
+
+def test_dt_bin_head_is_causal_and_gives_a_fresh_probability():
+    from onset.model import dt_bin_targets, fresh_probability
+    torch.manual_seed(0)
+    m = OnsetDetector(ModelConfig(**SMALL, dt_bins=1)).eval()
+    x = signal(400)
+    y = x.clone()
+    y[250:] += 5.0
+    with torch.no_grad():
+        a, b = m(x[None])["dt_logits"], m(y[None])["dt_logits"]
+    assert a.shape == (1, 40, 5)
+    assert torch.allclose(a[:, :24], b[:, :24], atol=1e-6)        # tokens ending before sample 250
+    f = fresh_probability(a)
+    assert ((f >= 0) & (f <= 1)).all()
+    t = dt_bin_targets(torch.tensor([0.0, 0.49, 0.5, 0.99, 1.0, 1.99, 2.0, 4.99, 5.0, 10.0]))
+    assert t.tolist() == [0, 0, 1, 1, 2, 2, 3, 3, 4, 4]

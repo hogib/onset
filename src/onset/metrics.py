@@ -69,15 +69,20 @@ class TriggerRule:
     tokens: int = 2             # ... for this many tokens in a row
     min_gap_s: float = 5.0      # between the P dates (t - dt) of two triggers
     max_dt: float = 10.0
+    # With the dt-bin head: the restart's test is P(dt < 1 s) >= fresh_prob
+    # instead of dt <= below; 0 keeps the level test.
+    fresh_prob: float = 0.0
 
     @classmethod
     def from_config(cls, tcfg, mcfg) -> "TriggerRule":
         return cls(bool(tcfg.dt_reset), tcfg.dt_reset_below, tcfg.dt_reset_from,
-                   int(tcfg.dt_reset_tokens), tcfg.min_trigger_gap_s, mcfg.max_dt_s)
+                   int(tcfg.dt_reset_tokens), tcfg.min_trigger_gap_s, mcfg.max_dt_s,
+                   getattr(tcfg, "dt_reset_prob", 0.0) if getattr(mcfg, "dt_bins", 0) else 0.0)
 
 
 def trigger_tokens(p: np.ndarray, dt: np.ndarray, thr: float, release: float,
-                   stride: int, fs: float, rule: TriggerRule | None = None) -> np.ndarray:
+                   stride: int, fs: float, rule: TriggerRule | None = None,
+                   fresh: np.ndarray | None = None) -> np.ndarray:
     """Token indices where the trigger fires. Without `rule`, rising edges
     only (`rising_edges`).
 
@@ -85,7 +90,9 @@ def trigger_tokens(p: np.ndarray, dt: np.ndarray, thr: float, release: float,
     between them). In a run the first token at or above `thr` is the rising
     edge; after each trigger at token L, a later token j fires on a restart
     when p[j] >= thr, dt[j] <= below and max(dt[L:j]) >= frm held for
-    `tokens` tokens in a row (any token below `thr` breaks the row). Candidates
+    `tokens` tokens in a row (any token below `thr` breaks the row). With
+    `rule.fresh_prob` and `fresh` (P(dt < 1 s) per token, from the dt-bin
+    head), the test dt[j] <= below becomes fresh[j] >= fresh_prob. Candidates
     closer than `min_gap_s` in P date to the last accepted trigger are
     dropped, as ayzek does, but still restart the dt bookkeeping."""
     if rule is None:
@@ -107,7 +114,9 @@ def trigger_tokens(p: np.ndarray, dt: np.ndarray, thr: float, release: float,
         while L + 1 < b:
             seg = slice(L + 1, b)
             peak = np.maximum.accumulate(dt[L:b - 1])          # max(dt[L:j]) for j in seg
-            ok = (p[seg] >= thr) & (dt[seg] <= rule.below) & (peak >= rule.frm)
+            new = (fresh[seg] >= rule.fresh_prob if rule.fresh_prob > 0 and fresh is not None
+                   else dt[seg] <= rule.below)
+            ok = (p[seg] >= thr) & new & (peak >= rule.frm)
             if rule.tokens > 1:
                 run = np.convolve(ok.astype(np.int32), np.ones(rule.tokens, np.int32))[:len(ok)]
                 ok = run >= rule.tokens
@@ -129,6 +138,11 @@ def trigger_tokens(p: np.ndarray, dt: np.ndarray, thr: float, release: float,
     return np.asarray(keep, int)
 
 
+def replace_rule(rule: TriggerRule, **kw) -> TriggerRule:
+    from dataclasses import replace
+    return replace(rule, **kw)
+
+
 def first_after(edges, t, p_s, tol_s, dt=None):
     """(latency s or nan, onset error s or nan) of the first trigger at or
     after `p_s - tol_s`."""
@@ -139,10 +153,10 @@ def first_after(edges, t, p_s, tol_s, dt=None):
     return t[j] - p_s, (np.nan if dt is None else (t[j] - dt[j]) - p_s)
 
 
-def score_event(p, dt, p_s, tol_s, stride, fs, thr, release, rule=None):
+def score_event(p, dt, p_s, tol_s, stride, fs, thr, release, rule=None, fresh=None):
     """(latency s or nan, early trigger bool, onset error s or nan)."""
     t = token_times(len(p), stride, fs)
-    edges = trigger_tokens(p, dt, thr, release, stride, fs, rule)
+    edges = trigger_tokens(p, dt, thr, release, stride, fs, rule, fresh)
     early = bool(len(edges) and t[edges[0]] < p_s - tol_s)
     lat, onset = first_after(edges, t, p_s, tol_s, dt)
     return lat, early, onset
@@ -167,7 +181,8 @@ def sweep(events: list[dict], noise: list[dict], stride: int, fs: float,
         lat, early, onset, lat2, dtmin2, lat3 = [], [], [], [], [], []
         for e in events:
             t = token_times(len(e["p"]), stride, fs)
-            edges = trigger_tokens(e["p"], e["dt"], thr, release, stride, fs, rule)
+            edges = trigger_tokens(e["p"], e["dt"], thr, release, stride, fs, rule,
+                                   e.get("fresh"))
             early.append(bool(len(edges) and t[edges[0]] < e["p_s"] - e["tol_s"]))
             l, o = first_after(edges, t, e["p_s"], e["tol_s"], e["dt"])
             lat.append(l)
@@ -181,7 +196,7 @@ def sweep(events: list[dict], noise: list[dict], stride: int, fs: float,
                     dtmin2.append(float(np.min(e["dt"][w2])))
         lat, lat2, lat3 = np.asarray(lat), np.asarray(lat2), np.asarray(lat3)
         fa = sum(len(trigger_tokens(n["p"], n.get("dt", np.zeros_like(n["p"])), thr, release,
-                                    stride, fs, rule)) for n in noise)
+                                    stride, fs, rule, n.get("fresh"))) for n in noise)
         row = {"threshold": float(thr),
                "false_per_hour": fa / noise_hours if noise_hours else np.nan,
                "early_rate": float(np.mean(early)) if events else np.nan,
@@ -203,6 +218,44 @@ def sweep(events: list[dict], noise: list[dict], stride: int, fs: float,
     return rows
 
 
+def restart_curve(events: list[dict], stride: int, fs: float, thr: float, rule: TriggerRule,
+                  knob: str, values, release_ratio: float = 0.5) -> list[dict]:
+    """The trade-off a restart rule makes, at a fixed threshold: for each value
+    of the rule's knob (`below` for the level test, `fresh_prob` for the
+    dt-bin test), the recall of onsets in a coda, synthetic (`p2_s`) and
+    catalogued (`later_s`), within 1 s and 4 s, against the triggers in codas
+    that match no onset (after the first onset's P + 4 s, and not within
+    [P - tolerance, P + 4 s] of a later onset), per 100 events. Some of those
+    are uncatalogued events, so the count is an upper bound on misfires."""
+    from dataclasses import replace
+    out = []
+    for v in values:
+        r = replace(rule, **{knob: v})
+        lat, coda, n = [], 0, 0
+        for e in events:
+            t = token_times(len(e["p"]), stride, fs)
+            ed = trigger_tokens(e["p"], e["dt"], thr, thr * release_ratio, stride, fs, r,
+                                e.get("fresh"))
+            later = list(e.get("later_s", ()))
+            tols = [LATER_TOL_S] * len(later)
+            if np.isfinite(e.get("p2_s", np.nan)):
+                later.append(e["p2_s"])
+                tols.append(e.get("tol2_s", 0.0))
+            for s3, tol in zip(later, tols):
+                lat.append(first_after(ed, t, s3, tol)[0])
+            late = ed[t[ed] > e["p_s"] + 4.0] if len(ed) else ed
+            for s3, tol in zip(later, tols):
+                late = late[~((t[late] >= s3 - tol) & (t[late] <= s3 + 4.0))]
+            coda += len(late)
+            n += 1
+        lat = np.asarray(lat)
+        out.append({"knob": knob, "value": float(v), "n_onsets": len(lat),
+                    "recall@1s": float(np.mean(lat <= 1.0)) if len(lat) else np.nan,
+                    "recall@4s": float(np.mean(lat <= 4.0)) if len(lat) else np.nan,
+                    "coda_triggers_per_100": 100.0 * coda / max(1, n)})
+    return out
+
+
 def operating_point(rows: list[dict], fa_target_per_hour: float) -> dict:
     """The lowest threshold whose false-trigger rate is within budget. The
     sweep is monotone in practice (a higher threshold fires less), so the
@@ -215,7 +268,7 @@ def false_per_hour(noise: list[dict], thr: float, release: float, stride: int, f
                    rule: TriggerRule | None = None) -> float:
     hours = sum((~n["missing_tokens"]).sum() for n in noise) * stride / fs / 3600
     fa = sum(len(trigger_tokens(n["p"], n.get("dt", np.zeros_like(n["p"])), thr, release,
-                                stride, fs, rule)) for n in noise)
+                                stride, fs, rule, n.get("fresh"))) for n in noise)
     return fa / hours if hours else np.nan
 
 
