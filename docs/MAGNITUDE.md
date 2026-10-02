@@ -109,7 +109,24 @@ event carries a total weight of one, shared equally among its stations, so
 that the many stations of a well-recorded event do not dominate the fit.
 The fit uses the events of M 2 or more in the train split.
 
-### 3.2 Event magnitude
+### 3.2 Channels that do not record
+
+A vertical channel that has failed, or that records far less ground motion
+than its response states, reports every value as censored. Each such value
+asserts an upper bound on Pd that the event did not in fact satisfy, and it
+pulls the estimate down. A value whose pre-P noise level lies more than a
+factor of 10 below its station's median noise level is therefore excluded,
+both from the fit and from the estimates. The medians are computed over all
+three splits. They involve no magnitude, and since the splits are
+station-disjoint, the validation and test stations would otherwise have no
+median. The rule excludes 56 of the 96,964 training values. Its importance
+lies in deployment, where a single defective channel enters every event that
+it records. On the replay of the 2025-04-23 Marmara sequence in ayzek, the
+vertical channel of MRMT records 25 times less noise than its median. With
+that channel included, the estimate of the Mw 6.2 mainshock was M 5.5; with
+it excluded, M 6.0 (ayzek's `docs/impl/17-pd-magnitude.md`).
+
+### 3.3 Event magnitude
 
 The magnitude of an event is estimated from all of its stations, measured
 and censored alike. The latter bound the estimate from above, so that a
@@ -136,19 +153,19 @@ the likelihood is sharply peaked and the prior has little effect.
 
 | τ | α | β (M) | β (M > 4) | γ (log R) | γ (> 70 km) | γ (> 140 km) | σ |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 1 s | −5.894 | 0.912 | −0.015 | −2.062 | +0.974 | −3.041 | 0.37 |
-| 3 s | −5.579 | 0.925 | +0.123 | −2.188 | +1.557 | −3.072 | 0.32 |
-| 5 s | −5.125 | 0.907 | +0.231 | −2.346 | +1.767 | −2.351 | 0.30 |
-| 10 s | −5.388 | 0.879 | +0.350 | −2.025 | +0.706 | −0.814 | 0.29 |
+| 1 s | −5.895 | 0.907 | −0.013 | −2.045 | +0.956 | −3.000 | 0.36 |
+| 3 s | −5.579 | 0.921 | +0.125 | −2.174 | +1.542 | −3.040 | 0.32 |
+| 5 s | −5.126 | 0.903 | +0.233 | −2.333 | +1.755 | −2.332 | 0.29 |
+| 10 s | −5.388 | 0.876 | +0.352 | −2.013 | +0.696 | −0.801 | 0.29 |
 
-Pd is in metres and R in kilometres. Every window is fitted to 96,958
-values from 11,806 events, of which 83,041 (τ = 10 s) to 90,546 (τ = 1 s)
+Pd is in metres and R in kilometres. Every window is fitted to 96,908
+values from 11,806 events, of which 82,991 (τ = 10 s) to 90,496 (τ = 1 s)
 are censored. The slope above M 4 increases with the window, from about
 zero at τ = 1 s to 0.35 at τ = 10 s. This is consistent with the source
 spectrum: the low-frequency energy of the larger events enters the
 measurement only as the window lengthens. Station terms were estimated for
-125 stations, with a standard deviation of 0.47. Four stations have terms
-beyond ±1 (CTKS −2.18, DAT −3.31, TOKT −1.74, YEDI −1.60), which
+125 stations, with a standard deviation of 0.46. Four stations have terms
+beyond ±1 (CTKS −2.18, DAT −3.30, TOKT −1.74, YEDI −1.61), which
 correspond to factors of 40–2000 in amplitude. These are taken to be
 errors in the response metadata or a defective vertical channel, and the
 stations are excluded from the estimates.
@@ -185,7 +202,7 @@ threshold). Under a correct model the two members of each pair agree.
    small events (+0.3 to +0.6 below M 3), although the calibration of the
    model is good in that range. The bias is therefore a property of the
    estimate rather than of the model, and the Gutenberg–Richter prior of
-   section 3.2 removes most of it.
+   section 3.3 removes most of it.
 
 ## 6. Results
 
@@ -199,17 +216,17 @@ adopted):**
 
 | band | n | bias 1 s | bias 3 s | bias 5 s | bias 10 s | MAE 1 s | MAE 3 s | MAE 5 s | MAE 10 s |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| M < 3 | 1209 | +0.33 | +0.20 | +0.11 | +0.06 | 0.40 | 0.30 | 0.26 | 0.26 |
-| M 3–4 | 900 | +0.02 | +0.01 | −0.03 | −0.06 | 0.26 | 0.21 | 0.20 | 0.20 |
-| M 4–5 | 154 | −0.11 | +0.04 | +0.05 | +0.02 | 0.33 | 0.22 | 0.21 | 0.19 |
-| M ≥ 5 | 11 | −0.05 | +0.13 | +0.06 | −0.07 | 0.22 | 0.16 | 0.12 | 0.14 |
-| all | 2274 | +0.16 | +0.11 | +0.05 | +0.01 | 0.33 | 0.26 | 0.24 | 0.23 |
+| M < 3 | 1209 | +0.32 | +0.19 | +0.10 | +0.05 | 0.39 | 0.29 | 0.26 | 0.26 |
+| M 3–4 | 900 | +0.01 | 0.00 | −0.04 | −0.07 | 0.26 | 0.21 | 0.21 | 0.20 |
+| M 4–5 | 154 | −0.12 | +0.04 | +0.04 | +0.02 | 0.33 | 0.22 | 0.21 | 0.19 |
+| M ≥ 5 | 11 | −0.05 | +0.13 | +0.05 | −0.07 | 0.22 | 0.16 | 0.12 | 0.14 |
+| all | 2274 | +0.15 | +0.10 | +0.04 | 0.00 | 0.33 | 0.25 | 0.24 | 0.24 |
 
 **Bias at M ≥ 5 for all four estimators (test split):**
 
 | estimator | 1 s | 3 s | 5 s | 10 s |
 |---|---:|---:|---:|---:|
-| censored likelihood, Gutenberg–Richter prior | −0.05 | +0.13 | +0.06 | −0.07 |
+| censored likelihood, Gutenberg–Richter prior | −0.05 | +0.13 | +0.05 | −0.07 |
 | censored likelihood, maximum likelihood | +0.15 | +0.24 | +0.14 | 0.00 |
 | least squares on the measured values, inverted | +0.30 | +0.91 | +0.98 | +0.99 |
 | regression of M on log Pd and log R | −0.66 | −0.32 | −0.24 | −0.32 |
@@ -222,8 +239,8 @@ adopted estimator is nearly unbiased from M 3 upward at every window of
 3 s or more.
 
 On the validation split the adopted estimator gives similar results above
-M 3 (bias between −0.06 and +0.02, MAE 0.13–0.27). Below M 3, however, a
-bias of +0.24 to +0.33 remains, against +0.06 to +0.33 on the test split.
+M 3 (bias between −0.10 and +0.02, MAE 0.13–0.27). Below M 3, however, a
+bias of +0.23 to +0.33 remains, against +0.05 to +0.32 on the test split.
 These events lie close to the detection threshold, where the estimate is
 most sensitive to the distribution of station distances and noise levels,
 and that distribution differs between the station-disjoint splits.
@@ -268,6 +285,10 @@ inside the coda of a larger event.
   distance term absorbs part of that error.
 - Four stations are excluded on the evidence of their station terms. Their
   response metadata have not yet been checked.
+- Within the coda of a larger event, the pre-P noise level is the coda
+  itself, the values of later events are censored, and those events receive
+  no estimate (section 6.1 and, for the Marmara sequence, ayzek's
+  `docs/impl/17-pd-magnitude.md`).
 - Station terms are applied only where at least 20 values were available
   in the train split. A station outside that set is assumed to have a term
   of zero.
@@ -276,13 +297,13 @@ inside the coda of a larger event.
 
 ```bash
 uv run --extra build onset measure-pd --data datasets/fdsn_wide_x           # -> datasets/fdsn_wide_x/pd.csv
-uv run --extra build onset fit-pd --pd datasets/fdsn_wide_x/pd.csv --out runs/pd_v4
+uv run --extra build onset fit-pd --pd datasets/fdsn_wide_x/pd.csv --out runs/pd_v5
 R=$ONSET_FDSN_ROOT/raw/data/batched_waveforms
 uv run --extra build onset pd-replay $R/day_before_24h/event_543430_raw.mseed \
-    $R/window_post_60s/event_543430_raw.mseed --fit runs/pd_v4/fit.json
+    $R/window_post_60s/event_543430_raw.mseed --fit runs/pd_v5/fit.json
 ```
 
-`runs/pd_v4/fit.json` holds the coefficients, station terms and b-value
+`runs/pd_v5/fit.json` holds the coefficients, station terms and b-value
 for every window, in the form that ayzek's export reads. `eval.csv` holds
 the evaluation of section 6, and `calibration.csv` the calibration of
 section 5.

@@ -40,6 +40,15 @@ latter minimises the error in M and so shrinks the slope by the ratio of the
 magnitude variance to the total variance (regression dilution), which pulls
 the largest events towards the mean magnitude.
 
+**Channels that do not record.** A vertical channel that has failed, or
+records far less than it should, reports every value as censored, and the
+spurious upper bounds pull the estimates down: on the 2025-04-23 Marmara
+replay, one such channel (MRMT, 25 times below its usual noise level) moved
+the Mw 6.2 mainshock's estimate from M6.0 to M5.5. A value whose pre-P noise
+lies more than DEAD_NOISE_FACTOR below its station's median (`station_noise`,
+over all splits, since it uses no magnitude and the splits are
+station-disjoint) is therefore left out, in the fit and in the estimates.
+
 Each event carries a total weight of one in every fit, shared among its
 stations. Station terms are estimated for stations with at least
 MIN_STATION_ROWS values; others get zero. A station whose term exceeds
@@ -66,6 +75,7 @@ MIN_SNR = 3.0
 MIN_FIT_M = 2.0
 MIN_STATION_ROWS = 20
 BAD_STATION_LOG10 = 1.0
+DEAD_NOISE_FACTOR = 10.0   # pre-P noise this far below the station's median: not recording
 SUM_ZERO_PENALTY = 1e3
 M_GRID = np.arange(1.0, 8.5001, 0.01)
 B_VALUE_MC = 2.5          # completeness magnitude for the b-value estimate
@@ -95,6 +105,21 @@ def mag_basis(m, knots=M_KNOTS) -> np.ndarray:
 def mag_term(f: dict, m) -> np.ndarray:
     """The magnitude part of a censored fit's relation at M."""
     return mag_basis(m, f["m_knots"]) @ np.asarray(f["beta"])
+
+
+def station_noise(df: pd.DataFrame) -> dict:
+    """Each station's median pre-P noise level (m), its typical background."""
+    d = df[df.pd_noise > 0]
+    return {s: float(v) for s, v in d.groupby("station").pd_noise.median().items()}
+
+
+def recording(df: pd.DataFrame, noise: dict) -> pd.Series:
+    """False for a value whose pre-P noise lies more than DEAD_NOISE_FACTOR
+    below its station's median: a channel that is not recording ground motion
+    reports every value as censored, and those spurious upper bounds would
+    pull an estimate down. Stations without a median are kept."""
+    typical = df.station.map(noise)
+    return (df.pd_noise > 0) & ~(df.pd_noise * DEAD_NOISE_FACTOR < typical)
 
 
 def usable(df: pd.DataFrame, tau: float) -> pd.Series:
@@ -132,11 +157,14 @@ def _loglik(mu, y, cens, sigma):
 
 
 def fit_censored(train: pd.DataFrame, tau: float, knots=DIST_KNOTS_KM,
-                 m_knots=M_KNOTS) -> dict:
-    """The relation by censored maximum likelihood (module docstring)."""
+                 m_knots=M_KNOTS, noise: dict | None = None) -> dict:
+    """The relation by censored maximum likelihood (module docstring).
+    `noise`: the stations' median noise levels (station_noise), by default
+    from `train`."""
     from scipy.optimize import minimize
+    noise = station_noise(train) if noise is None else noise
     d = train[(train.magnitude >= MIN_FIT_M) & train.magnitude.notna()
-              & (train.pd_noise > 0)]
+              & recording(train, noise)]
     y, cens, lr, m, w = _rows(d, tau)
     B, Mb = dist_basis(lr, knots), mag_basis(m, m_knots)
     nb, nm = B.shape[1], Mb.shape[1]
@@ -168,6 +196,7 @@ def fit_censored(train: pd.DataFrame, tau: float, knots=DIST_KNOTS_KM,
             "m_knots": list(m_knots), "gamma": list(map(float, x[ig])), "knots_km": list(knots),
             "sigma": float(np.exp(x[-1])),
             "station": dict(zip(stations, map(float, x[is_]))),
+            "station_noise": noise,
             "n_values": int(len(d)), "n_censored": int(cens.sum()),
             "n_events": int(d.event_id.nunique()), "converged": bool(r.success)}
 
@@ -239,7 +268,7 @@ def estimate_censored(df: pd.DataFrame, f: dict, b: float | None = None) -> pd.D
     None for an event no station records above the threshold."""
     b = f.get("b_value", 0.0) if b is None else b
     tau = f["tau_s"]
-    d = df[(df.pd_noise > 0) & ~_flagged(df, f)]
+    d = df[recording(df, f.get("station_noise", {})) & ~_flagged(df, f)]
     y, cens, lr, _, _ = _rows(d, tau)
     s = d.station.map(f["station"]).fillna(0.0).to_numpy()
     base = f["alpha"] + dist_basis(lr, f["knots_km"]) @ np.asarray(f["gamma"]) + s
@@ -271,7 +300,7 @@ def calibration(df: pd.DataFrame, f: dict) -> pd.DataFrame:
     an excess residual marks a band whose Pd the relation underpredicts."""
     from scipy.stats import norm
     tau = f["tau_s"]
-    d = df[(df.magnitude >= MIN_FIT_M) & (df.pd_noise > 0)]
+    d = df[(df.magnitude >= MIN_FIT_M) & recording(df, f.get("station_noise", {}))]
     y, cens, lr, m, _ = _rows(d, tau)
     s = d.station.map(f["station"]).fillna(0.0).to_numpy()
     mu = f["alpha"] + mag_term(f, m) + dist_basis(lr, f["knots_km"]) @ np.asarray(f["gamma"]) + s
@@ -315,9 +344,14 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
     fits, rows, cal = {}, [], []
     b = b_value(train.drop_duplicates("event_id").magnitude)
+    # Every station's median noise level, from all splits: it uses no
+    # magnitude, and the splits are station-disjoint, so the validation and
+    # test stations (and those ayzek runs on) need their own.
+    noise = station_noise(df)
     print(f"Gutenberg-Richter b-value of the train events above M{B_VALUE_MC:g}: {b:.2f}")
     for tau in PD_WINDOWS_S:
-        cen, ols, inv = fit_censored(train, tau), fit_ols(train, tau), fit_ols(train, tau, True)
+        cen = fit_censored(train, tau, noise=noise)
+        ols, inv = fit_ols(train, tau), fit_ols(train, tau, True)
         cen["b_value"] = b
         fits[f"{tau:g}"] = cen
         cal.append(calibration(train, cen))

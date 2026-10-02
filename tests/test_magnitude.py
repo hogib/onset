@@ -153,3 +153,22 @@ def test_gutenberg_richter_prior_corrects_the_selection_of_small_events():
     assert bias_ml > 0.15
     assert abs(bias_post) < bias_ml / 2
     assert (post.sd > 0).all()
+
+
+def test_a_channel_that_does_not_record_is_left_out():
+    """A station whose pre-P noise is far below its usual level reports every
+    value as censored; its spurious upper bound would pull the estimate down."""
+    f = {"tau_s": 3.0, "alpha": ALPHA, "beta": [BETA], "m_knots": [], "gamma": [GAMMA],
+         "knots_km": [], "sigma": 0.3, "station": {}, "b_value": 0.0,
+         "station_noise": {"A": 1e-7, "B": 1e-7, "DEAD": 1e-7}}
+    m = 5.0
+    rows = [{"event_id": 0, "station": s, "distance_km": 40.0, "magnitude": m,
+             "pd_noise": 1e-7, "pd_3s": 10 ** (ALPHA + BETA * m + GAMMA * pd_fit.log_r(40.0))}
+            for s in ("A", "B")]
+    rows.append({"event_id": 0, "station": "DEAD", "distance_km": 40.0, "magnitude": m,
+                 "pd_noise": 2e-9, "pd_3s": 3e-9})        # 50x below its median
+    est = pd_fit.estimate_censored(pd.DataFrame(rows), f)
+    assert est.est.iloc[0] == pytest.approx(m, abs=0.05)
+    f["station_noise"] = {}                                   # without the guard
+    biased = pd_fit.estimate_censored(pd.DataFrame(rows), f)
+    assert biased.est.iloc[0] < m - 0.3
